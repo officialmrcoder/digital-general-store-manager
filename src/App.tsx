@@ -41,6 +41,7 @@ export default function App() {
     recordKhataTransaction,
     processOrder,
     resetDemoData,
+    syncFromSupabase,
   } = useStoreData();
 
   // If role is super_admin, default to 'admin' tab; otherwise 'pos'
@@ -106,6 +107,7 @@ export default function App() {
             onCreateStore={createStoreWithCredentials}
             onToggleStoreStatus={toggleStoreStatus}
             onDeleteStore={deleteStore}
+            onRefreshSync={syncFromSupabase}
           />
         )}
 

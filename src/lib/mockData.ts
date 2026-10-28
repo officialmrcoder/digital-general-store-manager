@@ -33,7 +33,7 @@ export const INITIAL_STORES: Store[] = [
     address: '450 Oak Avenue, Irving, TX',
     currency: 'USD',
     taxRate: 0.05,
-    status: 'trial',
+    status: 'active',
     subscriptionPlan: 'free',
     createdAt: '2026-03-10T14:15:00Z',
   },

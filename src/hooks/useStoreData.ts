@@ -151,29 +151,12 @@ export function useStoreData() {
     if (!isSupabaseConfigured || !supabase) return;
 
     try {
-      // Fetch Stores from Supabase
-      const { data: dbStores } = await supabase.from('stores').select('*');
-      if (dbStores && Array.isArray(dbStores) && dbStores.length > 0) {
-        const mappedStores: Store[] = dbStores.map((s: any) => ({
-          id: s.id,
-          name: s.name,
-          slug: s.slug || '',
-          phone: s.phone || '',
-          address: s.address || '',
-          currency: s.currency || 'PKR',
-          taxRate: Number(s.tax_rate ?? 0),
-          status: s.status || 'active',
-          ownerName: s.owner_name || '',
-          ownerCnic: s.owner_cnic || '',
-          createdAt: s.created_at || new Date().toISOString(),
-        }));
-        setStores(mappedStores);
-      }
-
-      // Fetch Users from Supabase
+      // 1. Fetch Users first so we can map owner details to stores
       const { data: dbUsers } = await supabase.from('store_users').select('*');
-      if (dbUsers && Array.isArray(dbUsers) && dbUsers.length > 0) {
-        const mappedUsers: StoreUser[] = dbUsers.map((u: any) => ({
+      const userList = Array.isArray(dbUsers) ? dbUsers : [];
+
+      if (userList.length > 0) {
+        const mappedUsers: StoreUser[] = userList.map((u: any) => ({
           id: u.id,
           storeId: u.store_id || u.storeId || '',
           userId: u.user_id || u.userId || u.id,
@@ -183,6 +166,7 @@ export function useStoreData() {
           password: u.password || '',
           role: u.role || 'store_owner',
         }));
+
         setUsers((prev) => {
           const combined = [...mappedUsers];
           for (const p of prev) {
@@ -193,13 +177,61 @@ export function useStoreData() {
           return combined;
         });
       }
+
+      // 2. Fetch Stores from Supabase
+      const { data: dbStores } = await supabase.from('stores').select('*');
+      if (dbStores && Array.isArray(dbStores)) {
+        const ownerMap = new Map();
+        for (const u of userList) {
+          if (u.store_id && (u.role === 'store_owner' || !ownerMap.has(u.store_id))) {
+            ownerMap.set(u.store_id, u);
+          }
+        }
+
+        const mappedStores: Store[] = dbStores.map((s: any) => {
+          const owner = ownerMap.get(s.id);
+          return {
+            id: s.id,
+            name: s.name,
+            slug: s.slug || '',
+            phone: s.phone || owner?.phone || '',
+            address: s.address || '',
+            currency: s.currency || 'PKR',
+            taxRate: Number(s.tax_rate ?? 0),
+            status: s.status || 'active',
+            ownerName: s.owner_name || owner?.full_name || '',
+            ownerCnic: s.owner_cnic || owner?.cnic || '',
+            createdAt: s.created_at || new Date().toISOString(),
+          };
+        });
+
+        setStores(mappedStores);
+      }
     } catch (err) {
       console.warn('Supabase sync notice:', err);
     }
   }, []);
 
+  // Multi-device sync: poll every 3 seconds + sync on window focus/tab change
   useEffect(() => {
     syncFromSupabase();
+
+    const interval = setInterval(() => {
+      syncFromSupabase();
+    }, 3000);
+
+    const onFocus = () => {
+      syncFromSupabase();
+    };
+
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('visibilitychange', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('visibilitychange', onFocus);
+    };
   }, [syncFromSupabase]);
 
   // Tenant-Scoped Data
@@ -418,7 +450,8 @@ export function useStoreData() {
   };
 
   // ── SUPER ADMIN: DELETE STORE ──────────────────────────────────
-  const deleteStore = (storeId: string) => {
+  const deleteStore = async (storeId: string) => {
+    // 1. Immediately update state
     setStores((prev) => prev.filter((s) => s.id !== storeId));
     setUsers((prev) => prev.filter((u) => u.storeId !== storeId));
     setProducts((prev) => prev.filter((p) => p.storeId !== storeId));
@@ -427,8 +460,23 @@ export function useStoreData() {
     setKhataTransactions((prev) => prev.filter((t) => t.storeId !== storeId));
     setCategories((prev) => prev.filter((c) => c.storeId !== storeId));
 
+    // 2. Persist immediately to localStorage
+    try {
+      const savedStores = localStorage.getItem(STORAGE_KEYS.STORES);
+      if (savedStores) {
+        const filtered = JSON.parse(savedStores).filter((s: Store) => s.id !== storeId);
+        localStorage.setItem(STORAGE_KEYS.STORES, JSON.stringify(filtered));
+      }
+    } catch {}
+
+    // 3. Delete in Supabase (cascades products, customers, transactions)
     if (isSupabaseConfigured && supabase) {
-      supabase.from('stores').delete().eq('id', storeId);
+      try {
+        await supabase.from('stores').delete().eq('id', storeId);
+        await supabase.from('store_users').delete().eq('store_id', storeId);
+      } catch (err) {
+        console.warn('Supabase delete store notice:', err);
+      }
     }
   };
 

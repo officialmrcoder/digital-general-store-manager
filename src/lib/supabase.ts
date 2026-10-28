@@ -4,8 +4,12 @@
  * Never crashes Vite even if @supabase/supabase-js is not installed in node_modules!
  */
 
-const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const DEFAULT_SUPABASE_URL = 'https://ljndqztwlltblsyedogl.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxqbmRxenR3bGx0YmxzeWVkb2dsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5MzgxNjIsImV4cCI6MjEwODUxNDE2Mn0.1P4f_jfhSctQC3yk3_mq8EIzhPeucGa2hlp8LAzPw5E';
+
+const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL).replace(/\/$/, '');
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
@@ -78,54 +82,66 @@ function createQueryBuilder(table: string) {
         return { data: null, error: err };
       }
     },
-    async update(payload: Record<string, any>) {
+    update(payload: Record<string, any>) {
+      const updateFilters: string[] = [];
+      let pendingExec: Promise<{ data: any; error: any }> | null = null;
+
+      const runUpdate = async () => {
+        if (!isSupabaseConfigured) return { data: null, error: null };
+        try {
+          const query = updateFilters.length > 0 ? `?${updateFilters.join('&')}` : '';
+          const res = await fetch(`${supabaseUrl}/rest/v1/${table}${query}`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json().catch(() => null);
+          return { data, error: res.ok ? null : new Error(res.statusText) };
+        } catch (err) {
+          return { data: null, error: err };
+        }
+      };
+
       const updateBuilder = {
         eq(column: string, value: string | number) {
-          filters.push(`${column}=eq.${encodeURIComponent(value)}`);
+          updateFilters.push(`${column}=eq.${encodeURIComponent(value)}`);
+          pendingExec = runUpdate();
           return updateBuilder;
         },
-        async then(resolve: (value: { data: any; error: any }) => void) {
-          if (!isSupabaseConfigured) {
-            resolve({ data: null, error: null });
-            return;
-          }
-          try {
-            const query = filters.length > 0 ? `?${filters.join('&')}` : '';
-            const res = await fetch(`${supabaseUrl}/rest/v1/${table}${query}`, {
-              method: 'PATCH',
-              headers,
-              body: JSON.stringify(payload),
-            });
-            const data = await res.json().catch(() => null);
-            resolve({ data, error: res.ok ? null : new Error(res.statusText) });
-          } catch (err) {
-            resolve({ data: null, error: err });
-          }
+        then(resolve: (value: { data: any; error: any }) => void, reject?: (reason: any) => void) {
+          if (!pendingExec) pendingExec = runUpdate();
+          return pendingExec.then(resolve, reject);
         },
       };
       return updateBuilder;
     },
-    async delete() {
+    delete() {
+      const deleteFilters: string[] = [];
+      let pendingExec: Promise<{ data: any; error: any }> | null = null;
+
+      const runDelete = async () => {
+        if (!isSupabaseConfigured) return { data: null, error: null };
+        try {
+          const query = deleteFilters.length > 0 ? `?${deleteFilters.join('&')}` : '';
+          const res = await fetch(`${supabaseUrl}/rest/v1/${table}${query}`, {
+            method: 'DELETE',
+            headers,
+          });
+          return { data: null, error: res.ok ? null : new Error(res.statusText) };
+        } catch (err) {
+          return { data: null, error: err };
+        }
+      };
+
       const deleteBuilder = {
         eq(column: string, value: string | number) {
-          filters.push(`${column}=eq.${encodeURIComponent(value)}`);
+          deleteFilters.push(`${column}=eq.${encodeURIComponent(value)}`);
+          pendingExec = runDelete();
           return deleteBuilder;
         },
-        async then(resolve: (value: { data: any; error: any }) => void) {
-          if (!isSupabaseConfigured) {
-            resolve({ data: null, error: null });
-            return;
-          }
-          try {
-            const query = filters.length > 0 ? `?${filters.join('&')}` : '';
-            const res = await fetch(`${supabaseUrl}/rest/v1/${table}${query}`, {
-              method: 'DELETE',
-              headers,
-            });
-            resolve({ data: null, error: res.ok ? null : new Error(res.statusText) });
-          } catch (err) {
-            resolve({ data: null, error: err });
-          }
+        then(resolve: (value: { data: any; error: any }) => void, reject?: (reason: any) => void) {
+          if (!pendingExec) pendingExec = runDelete();
+          return pendingExec.then(resolve, reject);
         },
       };
       return deleteBuilder;
