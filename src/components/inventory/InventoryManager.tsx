@@ -42,6 +42,12 @@ interface InventoryManagerProps {
     name: string,
     unitType: UnitCategory
   ) => { success: boolean; error?: string; category?: ProductCategory };
+  onUpdateCategory?: (
+    id: string,
+    name: string,
+    unitType: UnitCategory
+  ) => { success: boolean; error?: string };
+  onDeleteCategory?: (id: string) => void;
   onSaveProduct: (productData: Omit<Product, 'id' | 'storeId' | 'createdAt'>, productId?: string) => void;
   onAdjustStock: (productId: string, newStock: number) => void;
   onDeleteProduct?: (productId: string) => void;
@@ -52,6 +58,8 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
   products,
   categories,
   onSaveCategory,
+  onUpdateCategory,
+  onDeleteCategory,
   onSaveProduct,
   onAdjustStock,
   onDeleteProduct,
@@ -65,6 +73,8 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
   const [stockDelta, setStockDelta] = useState<number>(0);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryUnitType, setNewCategoryUnitType] = useState<UnitCategory>('count');
+  const [editingCategory, setEditingCategory] = useState<ProductCategory | null>(null);
+  const [categoryToDelete, setCategoryToDelete] = useState<ProductCategory | null>(null);
   const [categoryFormError, setCategoryFormError] = useState('');
 
   // Form states for Add/Edit
@@ -160,24 +170,75 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
     });
   };
 
-  const handleAddCategorySubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const startEditCategory = (cat: ProductCategory) => {
+    setEditingCategory(cat);
+    setNewCategoryName(cat.name);
+    setNewCategoryUnitType(cat.unitType);
     setCategoryFormError('');
-    const result = onSaveCategory(newCategoryName, newCategoryUnitType);
-    if (!result.success) {
-      setCategoryFormError(result.error || 'Could not save category.');
-      return;
-    }
+  };
+
+  const cancelEditCategory = () => {
+    setEditingCategory(null);
     setNewCategoryName('');
     setNewCategoryUnitType('count');
-    setShowCategoryModal(false);
-    if (showAddModal && result.category) {
-      setFormData({
-        ...formData,
-        category: result.category.name,
-        baseUnit: defaultBaseUnitForType(result.category.unitType),
-      });
+    setCategoryFormError('');
+  };
+
+  const handleCategoryFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setCategoryFormError('');
+
+    if (editingCategory) {
+      if (!onUpdateCategory) return;
+      const result = onUpdateCategory(editingCategory.id, newCategoryName, newCategoryUnitType);
+      if (!result.success) {
+        setCategoryFormError(result.error || 'Could not update category.');
+        return;
+      }
+      // If we are currently editing a product with this category, update form
+      if (formData.category === editingCategory.name) {
+        setFormData((prev) => ({
+          ...prev,
+          category: newCategoryName.trim(),
+          baseUnit: defaultBaseUnitForType(newCategoryUnitType),
+        }));
+      }
+      setEditingCategory(null);
+      setNewCategoryName('');
+      setNewCategoryUnitType('count');
+    } else {
+      const result = onSaveCategory(newCategoryName, newCategoryUnitType);
+      if (!result.success) {
+        setCategoryFormError(result.error || 'Could not save category.');
+        return;
+      }
+      setNewCategoryName('');
+      setNewCategoryUnitType('count');
+      if (showAddModal && result.category) {
+        setFormData({
+          ...formData,
+          category: result.category.name,
+          baseUnit: defaultBaseUnitForType(result.category.unitType),
+        });
+        setShowCategoryModal(false);
+      }
     }
+  };
+
+  const confirmDeleteCategory = () => {
+    if (!categoryToDelete || !onDeleteCategory) return;
+    const catName = categoryToDelete.name;
+    onDeleteCategory(categoryToDelete.id);
+    if (selectedCategory === catName) {
+      setSelectedCategory('All');
+    }
+    if (formData.category === catName) {
+      setFormData((prev) => ({ ...prev, category: 'General' }));
+    }
+    if (editingCategory?.id === categoryToDelete.id) {
+      cancelEditCategory();
+    }
+    setCategoryToDelete(null);
   };
 
   const handleFormSubmit = (e: React.FormEvent) => {
@@ -248,15 +309,13 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
           <button
             type="button"
             onClick={() => {
-              setCategoryFormError('');
-              setNewCategoryName('');
-              setNewCategoryUnitType('count');
+              cancelEditCategory();
               setShowCategoryModal(true);
             }}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-bold text-xs transition cursor-pointer"
           >
             <Tag className="w-4 h-4" />
-            <span>Add Category</span>
+            <span>Manage Categories</span>
           </button>
           <button
             onClick={() => openAddModal()}
@@ -296,7 +355,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
           </button>
           {filterCategoryNames.length === 0 ? (
             <span className="text-xs text-slate-500 px-2 whitespace-nowrap">
-              No categories yet — use Add Category
+              No categories yet
             </span>
           ) : (
             filterCategoryNames.map((cat) => (
@@ -314,6 +373,18 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
               </button>
             ))
           )}
+          <button
+            type="button"
+            onClick={() => {
+              cancelEditCategory();
+              setShowCategoryModal(true);
+            }}
+            title="Manage Categories"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-slate-300 text-slate-600 hover:text-black hover:border-black text-xs font-bold transition cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <Plus className="w-3 h-3" />
+            <span>Category</span>
+          </button>
         </div>
       </div>
 
@@ -432,21 +503,54 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
         </div>
       </div>
 
-      {/* Add Category Modal */}
+      {/* Manage Categories Modal */}
       {showCategoryModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-md rounded-2xl bg-white border border-slate-200 shadow-2xl p-6 text-slate-900 space-y-4">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-2xl bg-white border border-slate-200 shadow-2xl p-5 sm:p-6 text-slate-900 space-y-5 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <h3 className="font-bold text-base text-slate-950">Add Product Category</h3>
+              <div className="flex items-center gap-2">
+                <Tag className="w-5 h-5 text-black" />
+                <h3 className="font-bold text-base text-slate-950">Store Categories</h3>
+              </div>
               <button
                 type="button"
-                onClick={() => setShowCategoryModal(false)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                onClick={() => {
+                  cancelEditCategory();
+                  setShowCategoryModal(false);
+                }}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer p-1"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <form onSubmit={handleAddCategorySubmit} className="space-y-4 text-xs">
+
+            {/* Add / Edit Form */}
+            <form onSubmit={handleCategoryFormSubmit} className="space-y-3.5 bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs">
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
+                  {editingCategory ? (
+                    <>
+                      <Edit2 className="w-3.5 h-3.5 text-black" />
+                      <span>Edit Category: <span className="underline">{editingCategory.name}</span></span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-3.5 h-3.5 text-black" />
+                      <span>Add New Category</span>
+                    </>
+                  )}
+                </h4>
+                {editingCategory && (
+                  <button
+                    type="button"
+                    onClick={cancelEditCategory}
+                    className="text-[11px] font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer"
+                  >
+                    Cancel Edit
+                  </button>
+                )}
+              </div>
+
               <div>
                 <label className="block text-slate-700 mb-1 font-bold">Category Name *</label>
                 <input
@@ -457,23 +561,21 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                     setNewCategoryName(e.target.value);
                     setCategoryFormError('');
                   }}
-                  placeholder="e.g. Rice, Beverages, Cleaning"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-black focus:bg-white"
+                  placeholder="e.g. Rice, Beverages, Snacks, Ghee..."
+                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-black"
                 />
               </div>
+
               <div>
-                <label className="block text-slate-700 mb-1 font-bold">Unit Type *</label>
-                <p className="text-[11px] text-slate-500 mb-2">
-                  How products in this category are usually measured (same as inventory units).
-                </p>
-                <div className="space-y-2">
+                <label className="block text-slate-700 mb-1 font-bold">Default Unit Type *</label>
+                <div className="grid grid-cols-3 gap-2">
                   {UNIT_TYPE_OPTIONS.map((opt) => (
                     <label
                       key={opt.value}
-                      className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
+                      className={`flex flex-col p-2.5 rounded-xl border cursor-pointer transition text-center ${
                         newCategoryUnitType === opt.value
-                          ? 'border-black bg-slate-50'
-                          : 'border-slate-200 hover:border-slate-300'
+                          ? 'border-black bg-white shadow-xs font-bold text-black'
+                          : 'border-slate-200 bg-white hover:border-slate-300 text-slate-600'
                       }`}
                     >
                       <input
@@ -482,35 +584,154 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                         value={opt.value}
                         checked={newCategoryUnitType === opt.value}
                         onChange={() => setNewCategoryUnitType(opt.value)}
-                        className="mt-0.5"
+                        className="sr-only"
                       />
-                      <span>
-                        <span className="font-bold text-slate-900 block">{opt.label}</span>
-                        <span className="text-[11px] text-slate-500">{opt.hint}</span>
-                      </span>
+                      <span className="text-xs">{opt.label}</span>
+                      <span className="text-[10px] text-slate-400 mt-0.5">{opt.hint}</span>
                     </label>
                   ))}
                 </div>
               </div>
+
               {categoryFormError && (
                 <p className="text-red-600 text-xs font-medium">{categoryFormError}</p>
               )}
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setShowCategoryModal(false)}
-                  className="px-4 py-2 rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold cursor-pointer"
-                >
-                  Cancel
-                </button>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                {editingCategory && (
+                  <button
+                    type="button"
+                    onClick={cancelEditCategory}
+                    className="px-3.5 py-1.5 rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold text-xs cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                )}
                 <button
                   type="submit"
-                  className="px-6 py-2 rounded-xl bg-black hover:bg-slate-800 text-white font-bold shadow-md cursor-pointer"
+                  className="px-5 py-2 rounded-xl bg-black hover:bg-slate-800 text-white font-bold text-xs shadow-md cursor-pointer transition active:scale-95"
                 >
-                  Save Category
+                  {editingCategory ? 'Update Category' : 'Save Category'}
                 </button>
               </div>
             </form>
+
+            {/* Existing Categories List */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                <span>Existing Categories ({categories.length})</span>
+                <span className="text-[11px] text-slate-400 font-normal">Click edit or delete</span>
+              </div>
+
+              {categories.length === 0 ? (
+                <div className="p-4 rounded-xl border border-dashed border-slate-200 text-center text-slate-400 text-xs">
+                  Abhi koi category add nahi hai. Upar form se add karein.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden max-h-56 overflow-y-auto">
+                  {categories.map((cat) => {
+                    const itemCount = products.filter(
+                      (p) => p.category.toLowerCase() === cat.name.toLowerCase()
+                    ).length;
+
+                    const isBeingEdited = editingCategory?.id === cat.id;
+
+                    return (
+                      <div
+                        key={cat.id}
+                        className={`p-3 flex items-center justify-between gap-3 text-xs transition ${
+                          isBeingEdited ? 'bg-slate-100 font-bold' : 'hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700 shrink-0">
+                            <Tag className="w-3.5 h-3.5" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 truncate">{cat.name}</p>
+                            <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5">
+                              <span className="capitalize px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200">
+                                {cat.unitType}
+                              </span>
+                              <span>•</span>
+                              <span>{itemCount} {itemCount === 1 ? 'item' : 'items'}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => startEditCategory(cat)}
+                            title="Edit Category"
+                            className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-200 text-slate-700 transition cursor-pointer"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCategoryToDelete(cat)}
+                            title="Delete Category"
+                            className="p-1.5 rounded-lg border border-red-200 hover:bg-red-50 text-red-600 transition cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => {
+                  cancelEditCategory();
+                  setShowCategoryModal(false);
+                }}
+                className="px-5 py-2 rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-bold transition cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Category Confirmation Dialog */}
+      {categoryToDelete && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-2xl bg-white border border-slate-200 shadow-2xl p-5 text-slate-900 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-slate-950">Delete Category?</h4>
+                <p className="text-xs text-slate-500 font-medium">"{categoryToDelete.name}"</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Kya aap waqai is category ko delete karna chahte hain? Is category ke tamam products 'General' category me shift ho jayenge.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setCategoryToDelete(null)}
+                className="px-4 py-1.5 rounded-xl border border-slate-300 text-xs font-bold hover:bg-slate-100 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteCategory}
+                className="px-4 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md cursor-pointer"
+              >
+                Yes, Delete
+              </button>
+            </div>
           </div>
         </div>
       )}

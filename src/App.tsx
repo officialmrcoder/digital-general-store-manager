@@ -33,6 +33,8 @@ export default function App() {
     toggleStoreStatus,
     deleteStore,
     saveCategory,
+    updateCategory,
+    deleteCategory,
     saveProduct,
     deleteProduct,
     adjustStock,
@@ -129,6 +131,8 @@ export default function App() {
             products={products}
             categories={categories}
             onSaveCategory={saveCategory}
+            onUpdateCategory={updateCategory}
+            onDeleteCategory={deleteCategory}
             onSaveProduct={saveProduct}
             onAdjustStock={adjustStock}
             onDeleteProduct={deleteProduct}

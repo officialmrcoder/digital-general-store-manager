@@ -503,6 +503,76 @@ export function useStoreData() {
     return { success: true as const, category: newCategory };
   };
 
+  const updateCategory = (id: string, name: string, unitType: UnitCategory) => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return { success: false as const, error: 'Category name is required.' };
+    }
+    const duplicate = categories.some(
+      (c) => c.id !== id && c.storeId === activeStoreId && c.name.toLowerCase() === trimmed.toLowerCase()
+    );
+    if (duplicate) {
+      return { success: false as const, error: 'A category with this name already exists.' };
+    }
+
+    const existing = categories.find((c) => c.id === id);
+    if (!existing) {
+      return { success: false as const, error: 'Category not found.' };
+    }
+    const oldName = existing.name;
+
+    setCategories((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, name: trimmed, unitType } : c))
+    );
+
+    // If category name changed, update all products that used old category name
+    if (oldName !== trimmed) {
+      setProducts((prev) =>
+        prev.map((p) =>
+          p.storeId === activeStoreId && p.category === oldName
+            ? { ...p, category: trimmed }
+            : p
+        )
+      );
+
+      if (isSupabaseConfigured && supabase) {
+        supabase
+          .from('products')
+          .update({ category: trimmed })
+          .eq('store_id', activeStoreId)
+          .eq('category', oldName);
+      }
+    }
+
+    return { success: true as const };
+  };
+
+  const deleteCategory = (id: string) => {
+    const existing = categories.find((c) => c.id === id);
+    if (!existing) return;
+    const catName = existing.name;
+
+    // 1. Remove from categories
+    setCategories((prev) => prev.filter((c) => c.id !== id));
+
+    // 2. Re-assign products in this category to 'General'
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.storeId === activeStoreId && p.category === catName
+          ? { ...p, category: 'General' }
+          : p
+      )
+    );
+
+    if (isSupabaseConfigured && supabase) {
+      supabase
+        .from('products')
+        .update({ category: 'General' })
+        .eq('store_id', activeStoreId)
+        .eq('category', catName);
+    }
+  };
+
   // ── PRODUCT CRUD ──────────────────────────────────────────────
   const saveProduct = (
     productData: Omit<Product, 'id' | 'storeId' | 'createdAt'>,
@@ -697,6 +767,8 @@ export function useStoreData() {
     toggleStoreStatus,
     deleteStore,
     saveCategory,
+    updateCategory,
+    deleteCategory,
     saveProduct,
     deleteProduct,
     adjustStock,
