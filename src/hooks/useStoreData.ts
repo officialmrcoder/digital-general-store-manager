@@ -207,6 +207,91 @@ export function useStoreData() {
 
         setStores(mappedStores);
       }
+
+      // 3. Fetch Products from Supabase
+      const { data: dbProducts } = await supabase.from('products').select('*');
+      if (dbProducts && Array.isArray(dbProducts) && dbProducts.length > 0) {
+        const mappedProducts: Product[] = dbProducts.map((p: any) => ({
+          id: p.id,
+          storeId: p.store_id || p.storeId || '',
+          name: p.name || '',
+          category: p.category || 'General',
+          barcode: p.barcode || '',
+          baseUnit: p.base_unit || p.baseUnit || 'pcs',
+          costPrice: Number(p.cost_price ?? p.costPrice ?? 0),
+          retailPrice: Number(p.retail_price ?? p.retailPrice ?? 0),
+          stockInBaseUnits: Number(p.stock_in_base_units ?? p.stockInBaseUnits ?? 0),
+          minStockAlert: Number(p.min_stock_alert ?? p.minStockAlert ?? 5),
+          hasVariants: p.has_variants ?? p.hasVariants ?? false,
+          imageUrl: p.image_url || p.imageUrl || undefined,
+          createdAt: p.created_at || p.createdAt || new Date().toISOString(),
+        }));
+        setProducts(mappedProducts);
+      }
+
+      // 4. Fetch Customers from Supabase
+      const { data: dbCustomers } = await supabase.from('customers').select('*');
+      if (dbCustomers && Array.isArray(dbCustomers) && dbCustomers.length > 0) {
+        const mappedCustomers: Customer[] = dbCustomers.map((c: any) => ({
+          id: c.id,
+          storeId: c.store_id || c.storeId || '',
+          name: c.name || '',
+          phone: c.phone || '',
+          address: c.address || undefined,
+          creditLimit: Number(c.credit_limit ?? c.creditLimit ?? 0),
+          currentBalance: Number(c.current_balance ?? c.currentBalance ?? 0),
+          createdAt: c.created_at || c.createdAt || new Date().toISOString(),
+          lastTransactionAt: c.last_transaction_at || c.lastTransactionAt || undefined,
+        }));
+        setCustomers(mappedCustomers);
+      }
+
+      // 5. Fetch Khata Transactions from Supabase
+      const { data: dbKhata } = await supabase.from('khata_transactions').select('*');
+      if (dbKhata && Array.isArray(dbKhata) && dbKhata.length > 0) {
+        const mappedKhata: KhataTransaction[] = dbKhata.map((t: any) => ({
+          id: t.id,
+          storeId: t.store_id || t.storeId || '',
+          customerId: t.customer_id || t.customerId || '',
+          orderId: t.order_id || t.orderId || undefined,
+          type: t.type || 'debit',
+          amount: Number(t.amount ?? 0),
+          balanceAfter: Number(t.balance_after ?? t.balanceAfter ?? 0),
+          description: t.description || '',
+          paymentMode: t.payment_mode || t.paymentMode || undefined,
+          createdAt: t.created_at || t.createdAt || new Date().toISOString(),
+          createdBy: t.created_by || t.createdBy || '',
+        }));
+        setKhataTransactions(mappedKhata);
+      }
+
+      // 6. Fetch Orders from Supabase
+      const { data: dbOrders } = await supabase.from('orders').select('*');
+      if (dbOrders && Array.isArray(dbOrders) && dbOrders.length > 0) {
+        const mappedOrders: Order[] = dbOrders.map((o: any) => ({
+          id: o.id,
+          orderNumber: o.order_number || o.orderNumber || o.id,
+          storeId: o.store_id || o.storeId || '',
+          cashierId: o.cashier_id || o.cashierId || '',
+          cashierName: o.cashier_name || o.cashierName || '',
+          customerId: o.customer_id || o.customerId || undefined,
+          customerName: o.customer_name || o.customerName || undefined,
+          items: o.items ? (typeof o.items === 'string' ? JSON.parse(o.items) : o.items) : [],
+          subtotal: Number(o.subtotal ?? 0),
+          discountTotal: Number(o.discount_total ?? o.discountTotal ?? 0),
+          taxTotal: Number(o.tax_total ?? o.taxTotal ?? 0),
+          grandTotal: Number(o.grand_total ?? o.grandTotal ?? 0),
+          paymentMethod: o.payment_method || o.paymentMethod || 'cash',
+          cashPaid: o.cash_paid != null ? Number(o.cash_paid) : undefined,
+          changeDue: o.change_due != null ? Number(o.change_due) : undefined,
+          khataAmount: o.khata_amount != null ? Number(o.khata_amount) : undefined,
+          notes: o.notes || undefined,
+          status: o.status || 'completed',
+          createdAt: o.created_at || o.createdAt || new Date().toISOString(),
+        }));
+        setOrders(mappedOrders);
+      }
+
     } catch (err) {
       console.warn('Supabase sync notice:', err);
     }
@@ -583,7 +668,18 @@ export function useStoreData() {
         prev.map((p) => (p.id === productId ? { ...p, ...productData } : p))
       );
       if (isSupabaseConfigured && supabase) {
-        supabase.from('products').update(productData).eq('id', productId).eq('store_id', activeStoreId);
+        supabase.from('products').update({
+          name: productData.name,
+          category: productData.category,
+          barcode: productData.barcode,
+          base_unit: productData.baseUnit,
+          cost_price: productData.costPrice,
+          retail_price: productData.retailPrice,
+          stock_in_base_units: productData.stockInBaseUnits,
+          min_stock_alert: productData.minStockAlert,
+          has_variants: productData.hasVariants,
+          image_url: productData.imageUrl,
+        }).eq('id', productId).eq('store_id', activeStoreId);
       }
     } else {
       const newProduct: Product = {
@@ -594,7 +690,21 @@ export function useStoreData() {
       };
       setProducts((prev) => [newProduct, ...prev]);
       if (isSupabaseConfigured && supabase) {
-        supabase.from('products').insert(newProduct);
+        supabase.from('products').insert({
+          id: newProduct.id,
+          store_id: newProduct.storeId,
+          name: newProduct.name,
+          category: newProduct.category,
+          barcode: newProduct.barcode,
+          base_unit: newProduct.baseUnit,
+          cost_price: newProduct.costPrice,
+          retail_price: newProduct.retailPrice,
+          stock_in_base_units: newProduct.stockInBaseUnits,
+          min_stock_alert: newProduct.minStockAlert,
+          has_variants: newProduct.hasVariants,
+          image_url: newProduct.imageUrl || null,
+          created_at: newProduct.createdAt,
+        });
       }
     }
   };
@@ -625,7 +735,12 @@ export function useStoreData() {
         prev.map((c) => (c.id === customerId ? { ...c, ...customerData } : c))
       );
       if (isSupabaseConfigured && supabase) {
-        supabase.from('customers').update(customerData).eq('id', customerId).eq('store_id', activeStoreId);
+        supabase.from('customers').update({
+          name: customerData.name,
+          phone: customerData.phone,
+          address: customerData.address || null,
+          credit_limit: customerData.creditLimit,
+        }).eq('id', customerId).eq('store_id', activeStoreId);
       }
     } else {
       const newCustomer: Customer = {
@@ -637,7 +752,16 @@ export function useStoreData() {
       };
       setCustomers((prev) => [newCustomer, ...prev]);
       if (isSupabaseConfigured && supabase) {
-        supabase.from('customers').insert(newCustomer);
+        supabase.from('customers').insert({
+          id: newCustomer.id,
+          store_id: newCustomer.storeId,
+          name: newCustomer.name,
+          phone: newCustomer.phone,
+          address: newCustomer.address || null,
+          credit_limit: newCustomer.creditLimit,
+          current_balance: 0,
+          created_at: newCustomer.createdAt,
+        });
       }
       return newCustomer;
     }
@@ -688,6 +812,27 @@ export function useStoreData() {
           : c
       )
     );
+
+    // Save to Supabase
+    if (isSupabaseConfigured && supabase) {
+      supabase.from('khata_transactions').insert({
+        id: newTx.id,
+        store_id: newTx.storeId,
+        customer_id: newTx.customerId,
+        order_id: newTx.orderId || null,
+        type: newTx.type,
+        amount: newTx.amount,
+        balance_after: newTx.balanceAfter,
+        description: newTx.description,
+        payment_mode: newTx.paymentMode || null,
+        created_by: newTx.createdBy,
+        created_at: newTx.createdAt,
+      });
+      supabase.from('customers').update({
+        current_balance: newBalance,
+        last_transaction_at: new Date().toISOString(),
+      }).eq('id', params.customerId).eq('store_id', activeStoreId);
+    }
   };
 
   // ── POS PROCESS ORDER ─────────────────────────────────────────
@@ -729,6 +874,32 @@ export function useStoreData() {
     }
 
     setOrders((prev) => [newOrder, ...prev]);
+
+    // Save order to Supabase for cross-device sync
+    if (isSupabaseConfigured && supabase) {
+      supabase.from('orders').insert({
+        id: newOrder.id,
+        order_number: newOrder.orderNumber,
+        store_id: newOrder.storeId,
+        cashier_id: newOrder.cashierId,
+        cashier_name: newOrder.cashierName,
+        customer_id: newOrder.customerId || null,
+        customer_name: newOrder.customerName || null,
+        items: JSON.stringify(newOrder.items),
+        subtotal: newOrder.subtotal,
+        discount_total: newOrder.discountTotal,
+        tax_total: newOrder.taxTotal,
+        grand_total: newOrder.grandTotal,
+        payment_method: newOrder.paymentMethod,
+        cash_paid: newOrder.cashPaid ?? null,
+        change_due: newOrder.changeDue ?? null,
+        khata_amount: newOrder.khataAmount ?? null,
+        notes: newOrder.notes || null,
+        status: newOrder.status,
+        created_at: newOrder.createdAt,
+      });
+    }
+
     return newOrder;
   };
 
