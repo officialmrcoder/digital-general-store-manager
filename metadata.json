@@ -1,0 +1,6 @@
+{
+  "name": "KiryanaFlow - Multi-Tenant Grocery POS & Khata SaaS",
+  "description": "Multi-tenant cloud POS, inventory management with fractional unit conversions, Khata ledger, and Supabase RLS architecture for Kiryana grocery stores.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
