@@ -53,20 +53,20 @@ export const Header: React.FC<HeaderProps> = ({
   }, []);
 
   // Tabs: If Super Admin, show Admin tab; otherwise show Store tabs
-  const tabs: Array<{ id: AppTab; label: string; icon: React.FC<{ className?: string }> }> =
+  const tabs: Array<{ id: AppTab; label: string; mobileLabel: string; icon: React.FC<{ className?: string }> }> =
     currentRole === 'super_admin'
       ? [
-          { id: 'admin', label: 'Stores Admin', icon: ShieldCheck },
-          { id: 'pos', label: 'POS Billing', icon: ShoppingBag },
-          { id: 'inventory', label: 'Inventory', icon: Package },
-          { id: 'khata', label: 'Khata', icon: BookOpen },
-          { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+          { id: 'admin', label: 'Stores Admin', mobileLabel: 'Admin', icon: ShieldCheck },
+          { id: 'pos', label: 'POS Billing', mobileLabel: 'POS', icon: ShoppingBag },
+          { id: 'inventory', label: 'Inventory', mobileLabel: 'Inventory', icon: Package },
+          { id: 'khata', label: 'Khata', mobileLabel: 'Khata', icon: BookOpen },
+          { id: 'dashboard', label: 'Dashboard', mobileLabel: 'Stats', icon: LayoutDashboard },
         ]
       : [
-          { id: 'pos', label: 'POS Billing', icon: ShoppingBag },
-          { id: 'inventory', label: 'Inventory', icon: Package },
-          { id: 'khata', label: 'Khata', icon: BookOpen },
-          { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+          { id: 'pos', label: 'POS Billing', mobileLabel: 'POS', icon: ShoppingBag },
+          { id: 'inventory', label: 'Inventory', mobileLabel: 'Inventory', icon: Package },
+          { id: 'khata', label: 'Khata', mobileLabel: 'Khata', icon: BookOpen },
+          { id: 'dashboard', label: 'Dashboard', mobileLabel: 'Stats', icon: LayoutDashboard },
         ];
 
   return (
@@ -193,8 +193,11 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </header>
 
-      {/* ── Mobile Bottom Tab Bar (Clean White) ──────────── */}
-      <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-slate-200 flex select-none">
+      {/* ── Mobile Bottom Tab Bar ──────────── */}
+      <nav
+        className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-slate-200 flex select-none"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      >
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = currentTab === tab.id;
@@ -202,12 +205,24 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               key={tab.id}
               onClick={() => onSelectTab(tab.id)}
-              className={`flex-1 flex flex-col items-center justify-center gap-1 py-2.5 transition-colors cursor-pointer ${
-                isActive ? 'text-black font-bold' : 'text-slate-400 active:text-slate-600'
-              }`}
+              className="flex-1 flex flex-col items-center justify-center gap-0.5 pt-2 pb-2 relative cursor-pointer"
             >
-              <Icon className="w-5 h-5" />
-              <span className="text-[10px]">{tab.label}</span>
+              {/* Active indicator line at top */}
+              {isActive && (
+                <span className="absolute top-0 left-2 right-2 h-[2px] rounded-full bg-black" />
+              )}
+              <Icon
+                className={`w-5 h-5 transition-colors ${
+                  isActive ? 'text-black' : 'text-slate-400'
+                }`}
+              />
+              <span
+                className={`text-[10px] leading-tight font-medium transition-colors ${
+                  isActive ? 'text-black font-bold' : 'text-slate-400'
+                }`}
+              >
+                {tab.mobileLabel}
+              </span>
             </button>
           );
         })}

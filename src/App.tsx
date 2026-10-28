@@ -95,7 +95,8 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-hidden relative flex flex-col pb-16 sm:pb-0">
+      <main className="flex-1 overflow-hidden relative flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+        <div className="flex-1 overflow-hidden relative flex flex-col pb-16 sm:pb-0 h-full">
         {/* Super Admin Dashboard */}
         {currentTab === 'admin' && (
           <SuperAdminView
@@ -162,6 +163,7 @@ export default function App() {
             onNavigateToPOS={() => setCurrentTab('pos')}
           />
         )}
+        </div>
       </main>
 
       {/* Thermal Receipt Reprint Modal */}
