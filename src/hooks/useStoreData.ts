@@ -114,6 +114,8 @@ export function useStoreData() {
 
   // Track IDs currently being deleted so sync doesn't re-insert them
   const pendingDeleteIds = useRef<Set<string>>(new Set());
+  // Track category NAMES being deleted (to block auto-regen from product fields)
+  const pendingDeleteCatNames = useRef<Set<string>>(new Set());
 
   // LocalStorage persistence
   useEffect(() => {
@@ -310,13 +312,17 @@ export function useStoreData() {
           setProducts(safeProducts);
         }
 
-        // Combine DB categories + local categories + any category discovered in real products
-        // Filter out any IDs currently being deleted (race condition guard).
+        // Combine DB categories + local state — Supabase is authoritative.
+        // Filter out any IDs/names currently being deleted.
         const currentLocalCategories = categoriesRef.current.filter(
-          (c) => !pendingDeleteIds.current.has(c.id)
+          (c) =>
+            !pendingDeleteIds.current.has(c.id) &&
+            !pendingDeleteCatNames.current.has(c.name.toLowerCase())
         );
         const safeCatRecords = catRecords.filter(
-          (c) => !pendingDeleteIds.current.has(c.id)
+          (c) =>
+            !pendingDeleteIds.current.has(c.id) &&
+            !pendingDeleteCatNames.current.has(c.name.toLowerCase())
         );
         const catMap = new Map<string, ProductCategory>();
         safeCatRecords.forEach((c) => catMap.set(`${c.storeId}_${c.name.toLowerCase()}`, c));
@@ -326,20 +332,8 @@ export function useStoreData() {
             catMap.set(key, c);
           }
         });
-        realProducts.forEach((p) => {
-          if (p.category) {
-            const key = `${p.storeId}_${p.category.toLowerCase()}`;
-            if (!catMap.has(key)) {
-              catMap.set(key, {
-                id: `cat-auto-${p.category.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
-                storeId: p.storeId,
-                name: p.category,
-                unitType: p.baseUnit === 'kg' ? 'weight' : p.baseUnit === 'liter' ? 'volume' : 'count',
-                createdAt: new Date().toISOString(),
-              });
-            }
-          }
-        });
+        // NOTE: Do NOT auto-generate categories from product.category field here —
+        // that would resurrect deleted categories. Categories come from __CATEGORY__ rows only.
 
         const finalCategories = Array.from(catMap.values());
         if (finalCategories.length > 0) {
@@ -810,16 +804,17 @@ export function useStoreData() {
 
     // Mark as pending delete BEFORE any state or Supabase changes
     pendingDeleteIds.current.add(id);
+    pendingDeleteCatNames.current.add(catName.toLowerCase());
 
-    // 1. Remove from categories
+    // 1. Remove from local categories state
     setCategories((prev) => prev.filter((c) => c.id !== id));
 
-    // Delete category record from Supabase
+    // 2. Delete category record from Supabase (stored as a product row with barcode='__CATEGORY__')
     if (isSupabaseConfigured && supabase) {
       await supabase.from('products').delete().eq('id', id).eq('store_id', effectiveStoreId);
     }
 
-    // 2. Re-assign products in this category to 'General'
+    // 3. Re-assign products in this category to 'General'
     setProducts((prev) =>
       prev.map((p) =>
         p.storeId === effectiveStoreId && p.category === catName
@@ -836,8 +831,12 @@ export function useStoreData() {
         .eq('category', catName);
     }
 
+    // Sync first while pendingDelete guards are still active, THEN clear them
+    if (isSupabaseConfigured && supabase) {
+      await syncFromSupabase();
+    }
     pendingDeleteIds.current.delete(id);
-    setTimeout(() => syncFromSupabase(), 400);
+    pendingDeleteCatNames.current.delete(catName.toLowerCase());
   };
 
   // ── PRODUCT CRUD ──────────────────────────────────────────────
@@ -900,11 +899,9 @@ export function useStoreData() {
     setProducts((prev) => prev.filter((p) => p.id !== productId));
     if (isSupabaseConfigured && supabase) {
       await supabase.from('products').delete().eq('id', productId).eq('store_id', effectiveStoreId);
-      pendingDeleteIds.current.delete(productId);
-      setTimeout(() => syncFromSupabase(), 400);
-    } else {
-      pendingDeleteIds.current.delete(productId);
+      await syncFromSupabase();
     }
+    pendingDeleteIds.current.delete(productId);
   };
 
   const adjustStock = async (productId: string, newStockInBaseUnits: number) => {
