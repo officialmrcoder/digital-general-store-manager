@@ -296,7 +296,7 @@ export const POSBillingScreen: React.FC<POSBillingScreenProps> = ({
         </div>
 
         {/* ── Product Grid ───────────────────────────────── */}
-        <div className="flex-1 overflow-y-auto p-3 sm:p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2 sm:gap-3 content-start">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 pb-28 sm:pb-6 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2 sm:gap-3 content-start">
           {filteredProducts.length === 0 && (
             <div className="col-span-full flex flex-col items-center justify-center py-20 text-slate-400 text-center">
               <Package className="w-10 h-10 mb-3 opacity-40 text-slate-300" />
@@ -352,17 +352,48 @@ export const POSBillingScreen: React.FC<POSBillingScreenProps> = ({
         </div>
       </div>
 
-      {/* RIGHT: Live Bill Ticket / Cart Panel (Light Theme) */}
+      {/* ── Mobile Floating Cart Bar (shown when cart has items and not expanded) ── */}
+      {cartItems.length > 0 && !showMobileCart && (
+        <div className="lg:hidden fixed bottom-[60px] inset-x-3 z-30">
+          <button
+            type="button"
+            onClick={() => setShowMobileCart(true)}
+            className="w-full bg-black text-white p-3.5 rounded-2xl shadow-xl flex items-center justify-between active:scale-98 transition-transform cursor-pointer border border-slate-800"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-xl bg-white/20 flex items-center justify-center font-bold text-xs">
+                {cartItems.reduce((sum, item) => sum + item.quantity, 0)}
+              </div>
+              <span className="font-bold text-xs">View Bill / Checkout</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono font-black text-sm">
+                {store.currency} {totals.grandTotal.toLocaleString()}
+              </span>
+              <ChevronUp className="w-4 h-4 text-slate-300" />
+            </div>
+          </button>
+        </div>
+      )}
+
+      {/* ── Mobile Cart Sheet Backdrop ── */}
+      {showMobileCart && (
+        <div
+          onClick={() => setShowMobileCart(false)}
+          className="lg:hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs transition-opacity"
+        />
+      )}
+
+      {/* RIGHT: Live Bill Ticket / Cart Panel */}
       <div
-        className={`fixed inset-x-0 bottom-0 z-40 lg:static lg:w-96 xl:w-[420px] bg-white flex flex-col border-t lg:border-t-0 lg:border-l border-slate-200 transition-all duration-300 ${
-          showMobileCart ? 'h-[85vh]' : 'h-16 lg:h-full'
+        className={`bg-white flex flex-col border-t lg:border-t-0 lg:border-l border-slate-200 transition-all duration-300 ${
+          showMobileCart
+            ? 'fixed inset-x-0 bottom-0 z-50 h-[88vh] rounded-t-3xl shadow-2xl'
+            : 'hidden lg:flex lg:static lg:w-96 xl:w-[420px] lg:h-full'
         }`}
       >
-        {/* Mobile Header / Expand Bar */}
-        <div
-          onClick={() => setShowMobileCart(!showMobileCart)}
-          className="lg:hidden flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-200 cursor-pointer"
-        >
+        {/* Mobile Sheet Header */}
+        <div className="lg:hidden flex items-center justify-between px-4 py-3.5 bg-slate-50 border-b border-slate-200 rounded-t-3xl">
           <div className="flex items-center gap-2">
             <ShoppingBag className="w-5 h-5 text-black" />
             <span className="font-bold text-sm text-slate-900">
@@ -370,14 +401,16 @@ export const POSBillingScreen: React.FC<POSBillingScreenProps> = ({
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <span className="font-black text-base text-black">
+            <span className="font-black text-base text-black font-mono">
               {store.currency} {totals.grandTotal.toLocaleString()}
             </span>
-            {showMobileCart ? (
-              <ChevronDown className="w-5 h-5 text-slate-600" />
-            ) : (
-              <ChevronUp className="w-5 h-5 text-slate-600" />
-            )}
+            <button
+              type="button"
+              onClick={() => setShowMobileCart(false)}
+              className="p-1 rounded-full hover:bg-slate-200 text-slate-600 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
         </div>
 

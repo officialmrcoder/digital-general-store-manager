@@ -116,7 +116,7 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 text-slate-900 p-4 sm:p-6 select-none antialiased">
+    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 text-slate-900 p-3 sm:p-6 pb-28 sm:pb-6 select-none antialiased">
       <div className="max-w-6xl mx-auto w-full space-y-6">
 
         {/* Top Header Card */}
@@ -194,7 +194,93 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
             <span className="text-xs text-slate-500 font-mono">{stores.length} Stores Total</span>
           </div>
 
-          <div className="overflow-x-auto">
+          {/* ── Mobile Card List (shown on phone) ── */}
+          <div className="sm:hidden divide-y divide-slate-100 p-2 space-y-2">
+            {stores.length === 0 ? (
+              <div className="text-center py-8 text-slate-400 text-xs">No stores registered yet.</div>
+            ) : (
+              stores.map((store) => {
+                const owner = users.find((u) => u.storeId === store.id && u.role === 'store_owner');
+                const isActive = store.status === 'active';
+                return (
+                  <div key={store.id} className="bg-slate-50/80 rounded-xl p-3 border border-slate-200/80 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-lg bg-black text-white flex items-center justify-center font-bold text-xs shrink-0">
+                          <Building2 className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-900 text-sm leading-tight">{store.name}</p>
+                          <p className="text-[10px] text-slate-500 font-mono">{store.address || 'No address'}</p>
+                        </div>
+                      </div>
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
+                          isActive
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-rose-50 text-rose-700 border border-rose-200'
+                        }`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                        {isActive ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-xs bg-white rounded-lg p-2 border border-slate-200/60">
+                      <div>
+                        <span className="text-[9px] uppercase font-bold text-slate-400 block">Owner</span>
+                        <span className="font-semibold text-slate-800 text-[11px] truncate block">
+                          {store.ownerName || owner?.fullName || 'N/A'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-bold text-slate-400 block">Phone</span>
+                        <span className="font-mono text-slate-800 text-[11px] block">
+                          {store.phone || owner?.phone || 'N/A'}
+                        </span>
+                      </div>
+                      <div className="col-span-2">
+                        <span className="text-[9px] uppercase font-bold text-slate-400 block">Login CNIC</span>
+                        <span className="font-mono font-bold text-slate-900 text-[11px] block">
+                          {store.ownerCnic || owner?.cnic || 'N/A'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <button
+                        onClick={() => onSelectStore(store.id)}
+                        className="flex-1 py-1.5 px-3 rounded-lg bg-black text-white text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Open Store</span>
+                      </button>
+                      <button
+                        onClick={() => onToggleStoreStatus(store.id)}
+                        className={`py-1.5 px-2.5 rounded-lg text-xs font-bold border transition cursor-pointer flex items-center gap-1 ${
+                          isActive
+                            ? 'bg-amber-50 text-amber-800 border-amber-300'
+                            : 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                        }`}
+                      >
+                        <Power className="w-3 h-3" />
+                        <span>{isActive ? 'Deactivate' : 'Activate'}</span>
+                      </button>
+                      <button
+                        onClick={() => setStoreToDelete(store)}
+                        className="p-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* ── Desktop Table (hidden on mobile) ── */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] tracking-wider border-b border-slate-200">
                 <tr>

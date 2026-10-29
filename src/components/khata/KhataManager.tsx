@@ -24,9 +24,9 @@ interface KhataManagerProps {
     type: 'debit' | 'credit';
     amount: number;
     description: string;
-    paymentMode?: 'cash' | 'online' | 'bank_transfer';
+    paymentMode?: 'cash' | 'online' | 'bank_transfer' | 'cheque';
     orderId?: string;
-  }) => void;
+  }) => void | Promise<any>;
 }
 
 export const KhataManager: React.FC<KhataManagerProps> = ({
@@ -46,6 +46,7 @@ export const KhataManager: React.FC<KhataManagerProps> = ({
   const [description, setDescription] = useState('');
   const [paymentMode, setPaymentMode] = useState<'cash' | 'online'>('cash');
   const [copiedReminder, setCopiedReminder] = useState(false);
+  const [mobileView, setMobileView] = useState<'list' | 'detail'>('list');
 
   // New customer form
   const [newCustName, setNewCustName] = useState('');
@@ -122,7 +123,7 @@ export const KhataManager: React.FC<KhataManagerProps> = ({
   return (
     <div className="flex-1 flex flex-col lg:flex-row h-full overflow-hidden bg-slate-50 text-slate-900 antialiased select-none">
       {/* LEFT: Customer List & Total Receivables Banner */}
-      <div className="w-full lg:w-96 flex flex-col h-full border-r border-slate-200 bg-white">
+      <div className={`w-full lg:w-96 flex flex-col h-full border-r border-slate-200 bg-white ${mobileView === 'detail' ? 'hidden lg:flex' : 'flex'}`}>
         {/* Receivables Banner */}
         <div className="p-4 bg-slate-50 border-b border-slate-200">
           <div className="flex items-center justify-between mb-2">
@@ -163,7 +164,7 @@ export const KhataManager: React.FC<KhataManagerProps> = ({
         </div>
 
         {/* Customer Items */}
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+        <div className="flex-1 overflow-y-auto divide-y divide-slate-100 pb-28 sm:pb-6">
           {filteredCustomers.map((cust) => {
             const isSelected = selectedCustomer?.id === cust.id;
             const hasDebt = cust.currentBalance > 0;
@@ -171,7 +172,10 @@ export const KhataManager: React.FC<KhataManagerProps> = ({
             return (
               <div
                 key={cust.id}
-                onClick={() => setSelectedCustomerId(cust.id)}
+                onClick={() => {
+                  setSelectedCustomerId(cust.id);
+                  setMobileView('detail');
+                }}
                 className={`p-3 cursor-pointer transition flex items-center justify-between ${
                   isSelected ? 'bg-slate-100 border-l-4 border-black' : 'hover:bg-slate-50'
                 }`}
@@ -201,10 +205,18 @@ export const KhataManager: React.FC<KhataManagerProps> = ({
 
       {/* RIGHT: Detailed Ledger Statement & Action Hub */}
       {selectedCustomer ? (
-        <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-50">
+        <div className={`flex-1 flex flex-col h-full overflow-hidden bg-slate-50 ${mobileView === 'list' ? 'hidden lg:flex' : 'flex'}`}>
           {/* Customer Profile Header */}
           <div className="p-4 bg-white border-b border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div>
+              {/* Mobile Back Button */}
+              <button
+                type="button"
+                onClick={() => setMobileView('list')}
+                className="lg:hidden flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-xl border border-slate-200 mb-2 cursor-pointer transition"
+              >
+                ← Back to Customer List
+              </button>
               <div className="flex items-center gap-2">
                 <h3 className="font-bold text-base text-slate-950">{selectedCustomer.name}</h3>
                 <span className="text-[10px] bg-slate-100 border border-slate-300 text-slate-700 px-2 py-0.5 rounded font-mono font-bold">
@@ -221,7 +233,7 @@ export const KhataManager: React.FC<KhataManagerProps> = ({
             </div>
 
             {/* Quick Actions */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <button
                 onClick={() => copyReminderText(selectedCustomer)}
                 className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-bold transition cursor-pointer"
@@ -305,11 +317,11 @@ export const KhataManager: React.FC<KhataManagerProps> = ({
           </div>
 
           {/* Ledger Statement Table */}
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="flex-1 overflow-y-auto p-4 pb-28 sm:pb-6">
             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-2">
               Customer Ledger History
             </h4>
-            <div className="rounded-2xl border border-slate-200 overflow-hidden bg-white shadow-xs">
+            <div className="rounded-2xl border border-slate-200 overflow-hidden bg-white shadow-xs overflow-x-auto">
               <table className="w-full text-left text-xs text-slate-800 border-collapse">
                 <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] tracking-wider border-b border-slate-200">
                   <tr>

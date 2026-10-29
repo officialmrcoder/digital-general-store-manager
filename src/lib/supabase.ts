@@ -39,6 +39,10 @@ function createQueryBuilder(table: string) {
       filters.push(`${column}=eq.${encodeURIComponent(value)}`);
       return builder;
     },
+    order(column: string, { ascending = true } = {}) {
+      filters.push(`order=${encodeURIComponent(column)}.${ascending ? 'asc' : 'desc'}`);
+      return builder;
+    },
     async maybeSingle() {
       if (!isSupabaseConfigured) return { data: null, error: null };
       try {
@@ -46,14 +50,17 @@ function createQueryBuilder(table: string) {
         const res = await fetch(`${supabaseUrl}/rest/v1/${table}${query}`, {
           headers: { ...headers, 'Accept': 'application/vnd.pgrst.object+json' },
         });
-        if (!res.ok) return { data: null, error: new Error(res.statusText) };
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          return { data: null, error: new Error(errJson?.message || res.statusText) };
+        }
         const data = await res.json();
         return { data, error: null };
       } catch (err) {
         return { data: null, error: err };
       }
     },
-    async then(resolve: (value: { data: any[] | null; error: any }) => void) {
+    async then(resolve: (value: { data: any[] | null; error: any }) => void, reject?: (reason: any) => void) {
       if (!isSupabaseConfigured) {
         resolve({ data: [], error: null });
         return;
@@ -61,30 +68,50 @@ function createQueryBuilder(table: string) {
       try {
         const query = filters.length > 0 ? `?select=${selectFields}&${filters.join('&')}` : `?select=${selectFields}`;
         const res = await fetch(`${supabaseUrl}/rest/v1/${table}${query}`, { headers });
-        if (!res.ok) throw new Error(res.statusText);
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => null);
+          throw new Error(errJson?.message || res.statusText);
+        }
         const data = await res.json();
         resolve({ data, error: null });
       } catch (err) {
-        resolve({ data: null, error: err });
+        if (reject) {
+          resolve({ data: null, error: err });
+        } else {
+          resolve({ data: null, error: err });
+        }
       }
     },
-    async insert(payload: Record<string, any> | Record<string, any>[]) {
+    async insert(payload: Record<string, any> | Record<string, any>[], options?: { upsert?: boolean }) {
       if (!isSupabaseConfigured) return { data: null, error: null };
       try {
+        // Use merge-duplicates for upsert behavior
+        const reqHeaders: Record<string, string> = {
+          ...headers,
+          'Prefer': options?.upsert !== false
+            ? 'resolution=merge-duplicates,return=representation'
+            : 'return=representation',
+        };
         const res = await fetch(`${supabaseUrl}/rest/v1/${table}`, {
           method: 'POST',
-          headers,
+          headers: reqHeaders,
           body: JSON.stringify(payload),
         });
         const data = await res.json().catch(() => null);
-        return { data, error: res.ok ? null : new Error(res.statusText) };
+        if (!res.ok) {
+          return { data: null, error: new Error(data?.message || data?.details || res.statusText) };
+        }
+        return { data, error: null };
       } catch (err) {
         return { data: null, error: err };
       }
     },
+    async upsert(payload: Record<string, any> | Record<string, any>[]) {
+      return builder.insert(payload, { upsert: true });
+    },
     update(payload: Record<string, any>) {
       const updateFilters: string[] = [];
-      let pendingExec: Promise<{ data: any; error: any }> | null = null;
+      let execPromise: Promise<{ data: any; error: any }> | null = null;
 
       const runUpdate = async () => {
         if (!isSupabaseConfigured) return { data: null, error: null };
@@ -96,28 +123,41 @@ function createQueryBuilder(table: string) {
             body: JSON.stringify(payload),
           });
           const data = await res.json().catch(() => null);
-          return { data, error: res.ok ? null : new Error(res.statusText) };
+          if (!res.ok) {
+            return { data: null, error: new Error(data?.message || data?.details || res.statusText) };
+          }
+          return { data, error: null };
         } catch (err) {
           return { data: null, error: err };
         }
       };
 
+      const getExecPromise = () => {
+        if (!execPromise) {
+          execPromise = runUpdate();
+        }
+        return execPromise;
+      };
+
+      // In case caller doesn't await or .then()
+      queueMicrotask(() => {
+        getExecPromise();
+      });
+
       const updateBuilder = {
         eq(column: string, value: string | number) {
           updateFilters.push(`${column}=eq.${encodeURIComponent(value)}`);
-          pendingExec = runUpdate();
           return updateBuilder;
         },
         then(resolve: (value: { data: any; error: any }) => void, reject?: (reason: any) => void) {
-          if (!pendingExec) pendingExec = runUpdate();
-          return pendingExec.then(resolve, reject);
+          return getExecPromise().then(resolve, reject);
         },
       };
       return updateBuilder;
     },
     delete() {
       const deleteFilters: string[] = [];
-      let pendingExec: Promise<{ data: any; error: any }> | null = null;
+      let execPromise: Promise<{ data: any; error: any }> | null = null;
 
       const runDelete = async () => {
         if (!isSupabaseConfigured) return { data: null, error: null };
@@ -127,21 +167,35 @@ function createQueryBuilder(table: string) {
             method: 'DELETE',
             headers,
           });
-          return { data: null, error: res.ok ? null : new Error(res.statusText) };
+          if (!res.ok) {
+            const data = await res.json().catch(() => null);
+            return { data: null, error: new Error(data?.message || res.statusText) };
+          }
+          return { data: null, error: null };
         } catch (err) {
           return { data: null, error: err };
         }
       };
 
+      const getExecPromise = () => {
+        if (!execPromise) {
+          execPromise = runDelete();
+        }
+        return execPromise;
+      };
+
+      // In case caller doesn't await or .then()
+      queueMicrotask(() => {
+        getExecPromise();
+      });
+
       const deleteBuilder = {
         eq(column: string, value: string | number) {
           deleteFilters.push(`${column}=eq.${encodeURIComponent(value)}`);
-          pendingExec = runDelete();
           return deleteBuilder;
         },
         then(resolve: (value: { data: any; error: any }) => void, reject?: (reason: any) => void) {
-          if (!pendingExec) pendingExec = runDelete();
-          return pendingExec.then(resolve, reject);
+          return getExecPromise().then(resolve, reject);
         },
       };
       return deleteBuilder;

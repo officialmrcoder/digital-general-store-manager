@@ -44,6 +44,8 @@ export default function App() {
     processOrder,
     resetDemoData,
     syncFromSupabase,
+    isSyncing,
+    lastSyncedAt,
   } = useStoreData();
 
   // If role is super_admin, default to 'admin' tab; otherwise 'pos'
@@ -71,7 +73,7 @@ export default function App() {
 
   // ── 2. Logged In Portal (Clean Light Theme: White & Black) ─────
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-50 font-sans antialiased text-slate-900 select-none">
+    <div className="flex flex-col h-[100dvh] w-screen overflow-hidden bg-slate-50 font-sans antialiased text-slate-900 select-none">
       {/* Offline Status Warning Bar */}
       {!isOnline && (
         <div className="bg-amber-500 text-black px-4 py-1 text-center text-xs font-bold flex items-center justify-center gap-2 shrink-0 z-50">
@@ -92,6 +94,9 @@ export default function App() {
         onResetData={resetDemoData}
         currentUser={currentUser}
         onLogout={logoutUser}
+        isSyncing={isSyncing}
+        onRefreshSync={syncFromSupabase}
+        lastSyncedAt={lastSyncedAt}
       />
 
       {/* Main Content Area */}

@@ -44,7 +44,7 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
   const profitMargin = totalSales > 0 ? ((grossProfit / totalSales) * 100).toFixed(1) : 0;
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 text-slate-900 p-4 sm:p-6 space-y-6 antialiased select-none">
+    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 text-slate-900 p-3 sm:p-6 pb-28 sm:pb-6 space-y-4 sm:space-y-6 antialiased select-none">
       {/* Welcome Banner */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-5 rounded-2xl bg-white border border-slate-200 shadow-sm">
         <div>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Store,
   StoreUser,
@@ -35,7 +35,6 @@ const STORAGE_KEYS = {
 };
 
 export function useStoreData() {
-  // Start with null so login screen opens when run
   const [currentUser, setCurrentUser] = useState<StoreUser | null>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
     return saved ? JSON.parse(saved) : null;
@@ -69,7 +68,8 @@ export function useStoreData() {
   });
 
   const [activeStoreId, setActiveStoreId] = useState<string>(() => {
-    return localStorage.getItem(STORAGE_KEYS.CURRENT_STORE_ID) || INITIAL_STORES[0].id;
+    const saved = localStorage.getItem(STORAGE_KEYS.CURRENT_STORE_ID);
+    return saved || INITIAL_STORES[0].id;
   });
 
   const [currentRole, setCurrentRole] = useState<StoreRole>(() => {
@@ -101,6 +101,17 @@ export function useStoreData() {
     return saved ? JSON.parse(saved) : [];
   });
 
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
+
+  // Keep references to current state to avoid race conditions in async operations
+  const productsRef = useRef(products);
+  productsRef.current = products;
+  const categoriesRef = useRef(categories);
+  categoriesRef.current = categories;
+  const storesRef = useRef(stores);
+  storesRef.current = stores;
+
   // LocalStorage persistence
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.STORES, JSON.stringify(stores));
@@ -111,7 +122,9 @@ export function useStoreData() {
   }, [users]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.CURRENT_STORE_ID, activeStoreId);
+    if (activeStoreId) {
+      localStorage.setItem(STORAGE_KEYS.CURRENT_STORE_ID, activeStoreId);
+    }
   }, [activeStoreId]);
 
   useEffect(() => {
@@ -146,11 +159,35 @@ export function useStoreData() {
     localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(categories));
   }, [categories]);
 
-  // Sync with Supabase on mount
+  // Ensure a store exists in Supabase to prevent foreign key errors (409)
+  const ensureStoreInSupabase = async (storeId: string) => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const allKnown = [...storesRef.current, ...INITIAL_STORES];
+    const target = allKnown.find((s) => s.id === storeId);
+    if (target) {
+      try {
+        await supabase.from('stores').insert({
+          id: target.id,
+          name: target.name,
+          slug: target.slug || target.name.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
+          phone: target.phone || '',
+          address: target.address || '',
+          currency: target.currency || 'PKR',
+          status: target.status || 'active',
+        });
+      } catch (e) {
+        console.warn('ensureStoreInSupabase notice:', e);
+      }
+    }
+  };
+
+  // ── BIDIRECTIONAL REAL-TIME CLOUD SYNC ───────────────────────────
   const syncFromSupabase = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
 
     try {
+      setIsSyncing(true);
+
       // 1. Fetch Users first so we can map owner details to stores
       const { data: dbUsers } = await supabase.from('store_users').select('*');
       const userList = Array.isArray(dbUsers) ? dbUsers : [];
@@ -178,55 +215,175 @@ export function useStoreData() {
         });
       }
 
-      // 2. Fetch Stores from Supabase
+      // 2. Fetch Stores from Supabase & Merge with local/initial stores
       const { data: dbStores } = await supabase.from('stores').select('*');
-      if (dbStores && Array.isArray(dbStores)) {
-        const ownerMap = new Map();
-        for (const u of userList) {
-          if (u.store_id && (u.role === 'store_owner' || !ownerMap.has(u.store_id))) {
-            ownerMap.set(u.store_id, u);
+      const storeList = Array.isArray(dbStores) ? dbStores : [];
+
+      const ownerMap = new Map();
+      for (const u of userList) {
+        if (u.store_id && (u.role === 'store_owner' || !ownerMap.has(u.store_id))) {
+          ownerMap.set(u.store_id, u);
+        }
+      }
+
+      const mappedStores: Store[] = storeList.map((s: any) => {
+        const owner = ownerMap.get(s.id);
+        return {
+          id: s.id,
+          name: s.name,
+          slug: s.slug || '',
+          phone: s.phone || owner?.phone || '',
+          address: s.address || '',
+          currency: s.currency || 'PKR',
+          taxRate: Number(s.tax_rate ?? 0),
+          status: s.status || 'active',
+          ownerName: s.owner_name || owner?.full_name || '',
+          ownerCnic: s.owner_cnic || owner?.cnic || '',
+          createdAt: s.created_at || new Date().toISOString(),
+        };
+      });
+
+      // Merge Supabase stores with any locally known stores (like INITIAL_STORES)
+      const mergedStores = [...mappedStores];
+      for (const localStore of [...storesRef.current, ...INITIAL_STORES]) {
+        if (!mergedStores.some((s) => s.id === localStore.id)) {
+          mergedStores.push(localStore);
+          // Upload local store to Supabase so foreign keys never fail
+          supabase.from('stores').insert({
+            id: localStore.id,
+            name: localStore.name,
+            slug: localStore.slug || localStore.name.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
+            phone: localStore.phone || '',
+            address: localStore.address || '',
+            currency: localStore.currency || 'PKR',
+            status: localStore.status || 'active',
+          });
+        }
+      }
+
+      if (mergedStores.length > 0) {
+        setStores(mergedStores);
+      }
+
+      // 3. Fetch Products and Categories from Supabase
+      const { data: dbProducts } = await supabase.from('products').select('*');
+      if (dbProducts && Array.isArray(dbProducts)) {
+        const catRecords: ProductCategory[] = [];
+        const realProducts: Product[] = [];
+
+        for (const p of dbProducts) {
+          if (p.barcode === '__CATEGORY__') {
+            catRecords.push({
+              id: p.id,
+              storeId: p.store_id || p.storeId || '',
+              name: p.name || '',
+              unitType: (p.category === 'weight' || p.category === 'volume' ? p.category : 'count') as UnitCategory,
+              createdAt: p.created_at || p.createdAt || new Date().toISOString(),
+            });
+          } else {
+            realProducts.push({
+              id: p.id,
+              storeId: p.store_id || p.storeId || '',
+              name: p.name || '',
+              category: p.category || 'General',
+              barcode: p.barcode || '',
+              baseUnit: p.base_unit || p.baseUnit || 'pcs',
+              costPrice: Number(p.cost_price ?? p.costPrice ?? 0),
+              retailPrice: Number(p.retail_price ?? p.retailPrice ?? 0),
+              stockInBaseUnits: Number(p.stock_in_base_units ?? p.stockInBaseUnits ?? 0),
+              minStockAlert: Number(p.min_stock_alert ?? p.minStockAlert ?? 5),
+              hasVariants: p.has_variants ?? p.hasVariants ?? false,
+              createdAt: p.created_at || p.createdAt || new Date().toISOString(),
+            });
           }
         }
 
-        const mappedStores: Store[] = dbStores.map((s: any) => {
-          const owner = ownerMap.get(s.id);
-          return {
-            id: s.id,
-            name: s.name,
-            slug: s.slug || '',
-            phone: s.phone || owner?.phone || '',
-            address: s.address || '',
-            currency: s.currency || 'PKR',
-            taxRate: Number(s.tax_rate ?? 0),
-            status: s.status || 'active',
-            ownerName: s.owner_name || owner?.full_name || '',
-            ownerCnic: s.owner_cnic || owner?.cnic || '',
-            createdAt: s.created_at || new Date().toISOString(),
-          };
+        // Bidirectional merge for Products:
+        // Supabase is authoritative, but if local has un-synced products, upload them to Supabase!
+        const currentLocalProducts = productsRef.current;
+        const unSyncedProducts = currentLocalProducts.filter(
+          (lp) => !realProducts.some((rp) => rp.id === lp.id)
+        );
+
+        if (unSyncedProducts.length > 0) {
+          // Push unsynced products up to Supabase
+          for (const up of unSyncedProducts) {
+            await ensureStoreInSupabase(up.storeId);
+            await supabase.from('products').insert({
+              id: up.id,
+              store_id: up.storeId,
+              name: up.name,
+              category: up.category,
+              barcode: up.barcode || '',
+              base_unit: up.baseUnit,
+              cost_price: up.costPrice,
+              retail_price: up.retailPrice,
+              stock_in_base_units: up.stockInBaseUnits,
+              min_stock_alert: up.minStockAlert,
+              has_variants: up.hasVariants,
+              created_at: up.createdAt,
+            });
+          }
+          // Merge un-synced into product list
+          setProducts([...realProducts, ...unSyncedProducts]);
+        } else if (realProducts.length > 0) {
+          setProducts(realProducts);
+        }
+
+        // Bidirectional merge for Categories:
+        const currentLocalCategories = categoriesRef.current;
+        const unSyncedCats = currentLocalCategories.filter(
+          (lc) => !catRecords.some((rc) => rc.id === lc.id || (rc.storeId === lc.storeId && rc.name.toLowerCase() === lc.name.toLowerCase()))
+        );
+
+        if (unSyncedCats.length > 0) {
+          for (const uc of unSyncedCats) {
+            await ensureStoreInSupabase(uc.storeId);
+            await supabase.from('products').insert({
+              id: uc.id,
+              store_id: uc.storeId,
+              name: uc.name,
+              category: uc.unitType,
+              barcode: '__CATEGORY__',
+              base_unit: 'category',
+              cost_price: 0,
+              retail_price: 0,
+              stock_in_base_units: 0,
+              min_stock_alert: 0,
+              has_variants: false,
+              created_at: uc.createdAt,
+            });
+          }
+        }
+
+        // Combine DB categories + local categories + any category discovered in real products
+        const catMap = new Map<string, ProductCategory>();
+        catRecords.forEach((c) => catMap.set(`${c.storeId}_${c.name.toLowerCase()}`, c));
+        currentLocalCategories.forEach((c) => {
+          const key = `${c.storeId}_${c.name.toLowerCase()}`;
+          if (!catMap.has(key)) {
+            catMap.set(key, c);
+          }
+        });
+        realProducts.forEach((p) => {
+          if (p.category) {
+            const key = `${p.storeId}_${p.category.toLowerCase()}`;
+            if (!catMap.has(key)) {
+              catMap.set(key, {
+                id: `cat-auto-${p.category.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
+                storeId: p.storeId,
+                name: p.category,
+                unitType: p.baseUnit === 'kg' ? 'weight' : p.baseUnit === 'liter' ? 'volume' : 'count',
+                createdAt: new Date().toISOString(),
+              });
+            }
+          }
         });
 
-        setStores(mappedStores);
-      }
-
-      // 3. Fetch Products from Supabase
-      const { data: dbProducts } = await supabase.from('products').select('*');
-      if (dbProducts && Array.isArray(dbProducts) && dbProducts.length > 0) {
-        const mappedProducts: Product[] = dbProducts.map((p: any) => ({
-          id: p.id,
-          storeId: p.store_id || p.storeId || '',
-          name: p.name || '',
-          category: p.category || 'General',
-          barcode: p.barcode || '',
-          baseUnit: p.base_unit || p.baseUnit || 'pcs',
-          costPrice: Number(p.cost_price ?? p.costPrice ?? 0),
-          retailPrice: Number(p.retail_price ?? p.retailPrice ?? 0),
-          stockInBaseUnits: Number(p.stock_in_base_units ?? p.stockInBaseUnits ?? 0),
-          minStockAlert: Number(p.min_stock_alert ?? p.minStockAlert ?? 5),
-          hasVariants: p.has_variants ?? p.hasVariants ?? false,
-          imageUrl: p.image_url || p.imageUrl || undefined,
-          createdAt: p.created_at || p.createdAt || new Date().toISOString(),
-        }));
-        setProducts(mappedProducts);
+        const finalCategories = Array.from(catMap.values());
+        if (finalCategories.length > 0) {
+          setCategories(finalCategories);
+        }
       }
 
       // 4. Fetch Customers from Supabase
@@ -292,8 +449,11 @@ export function useStoreData() {
         setOrders(mappedOrders);
       }
 
+      setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
     } catch (err) {
       console.warn('Supabase sync notice:', err);
+    } finally {
+      setIsSyncing(false);
     }
   }, []);
 
@@ -319,13 +479,25 @@ export function useStoreData() {
     };
   }, [syncFromSupabase]);
 
+  // Ensure activeStoreId is always valid
+  const effectiveStoreId = stores.some((s) => s.id === activeStoreId)
+    ? activeStoreId
+    : stores[0]?.id || activeStoreId;
+
+  // Auto-correct activeStoreId if it was pointing to an invalid id
+  useEffect(() => {
+    if (stores.length > 0 && !stores.some((s) => s.id === activeStoreId)) {
+      setActiveStoreId(stores[0].id);
+    }
+  }, [stores, activeStoreId]);
+
   // Tenant-Scoped Data
-  const currentStore = stores.find((s) => s.id === activeStoreId) || stores[0];
-  const storeProducts = products.filter((p) => p.storeId === activeStoreId);
-  const storeCategories = categories.filter((c) => c.storeId === activeStoreId);
-  const storeCustomers = customers.filter((c) => c.storeId === activeStoreId);
-  const storeOrders = orders.filter((o) => o.storeId === activeStoreId);
-  const storeKhataTxs = khataTransactions.filter((tx) => tx.storeId === activeStoreId);
+  const currentStore = stores.find((s) => s.id === effectiveStoreId) || stores[0];
+  const storeProducts = products.filter((p) => p.storeId === effectiveStoreId);
+  const storeCategories = categories.filter((c) => c.storeId === effectiveStoreId);
+  const storeCustomers = customers.filter((c) => c.storeId === effectiveStoreId);
+  const storeOrders = orders.filter((o) => o.storeId === effectiveStoreId);
+  const storeKhataTxs = khataTransactions.filter((tx) => tx.storeId === effectiveStoreId);
 
   // ── AUTHENTICATION: LOGIN BY CNIC & PASSWORD ───────────────────
   const loginWithCnic = async (cnicInput: string, passwordInput: string) => {
@@ -379,10 +551,13 @@ export function useStoreData() {
       };
     }
 
-    // 3. If Super Admin, grant platform access
+    // 3. If Super Admin, grant platform access and ensure a valid store is active
     if (matchedUser.role === 'super_admin') {
       setCurrentUser(matchedUser);
       setCurrentRole('super_admin');
+      if (stores.length > 0 && !stores.some((s) => s.id === activeStoreId)) {
+        setActiveStoreId(stores[0].id);
+      }
       return {
         success: true,
         user: matchedUser,
@@ -566,35 +741,59 @@ export function useStoreData() {
   };
 
   // ── PRODUCT CATEGORIES ────────────────────────────────────────
-  const saveCategory = (name: string, unitType: UnitCategory) => {
+  const saveCategory = async (name: string, unitType: UnitCategory) => {
     const trimmed = name.trim();
     if (!trimmed) {
       return { success: false as const, error: 'Category name is required.' };
     }
     const duplicate = categories.some(
-      (c) => c.storeId === activeStoreId && c.name.toLowerCase() === trimmed.toLowerCase()
+      (c) => c.storeId === effectiveStoreId && c.name.toLowerCase() === trimmed.toLowerCase()
     );
     if (duplicate) {
       return { success: false as const, error: 'This category name already exists for this store.' };
     }
     const newCategory: ProductCategory = {
       id: `cat-${Date.now().toString(36)}`,
-      storeId: activeStoreId,
+      storeId: effectiveStoreId,
       name: trimmed,
       unitType,
       createdAt: new Date().toISOString(),
     };
     setCategories((prev) => [...prev, newCategory]);
+
+    // Save to Supabase for cross-device sync
+    if (isSupabaseConfigured && supabase) {
+      await ensureStoreInSupabase(newCategory.storeId);
+      const res = await supabase.from('products').insert({
+        id: newCategory.id,
+        store_id: newCategory.storeId,
+        name: newCategory.name,
+        category: newCategory.unitType,
+        barcode: '__CATEGORY__',
+        base_unit: 'category',
+        cost_price: 0,
+        retail_price: 0,
+        stock_in_base_units: 0,
+        min_stock_alert: 0,
+        has_variants: false,
+        created_at: newCategory.createdAt,
+      });
+      if (res.error) {
+        console.warn('Supabase saveCategory notice:', res.error);
+      }
+      setTimeout(() => syncFromSupabase(), 400);
+    }
+
     return { success: true as const, category: newCategory };
   };
 
-  const updateCategory = (id: string, name: string, unitType: UnitCategory) => {
+  const updateCategory = async (id: string, name: string, unitType: UnitCategory) => {
     const trimmed = name.trim();
     if (!trimmed) {
       return { success: false as const, error: 'Category name is required.' };
     }
     const duplicate = categories.some(
-      (c) => c.id !== id && c.storeId === activeStoreId && c.name.toLowerCase() === trimmed.toLowerCase()
+      (c) => c.id !== id && c.storeId === effectiveStoreId && c.name.toLowerCase() === trimmed.toLowerCase()
     );
     if (duplicate) {
       return { success: false as const, error: 'A category with this name already exists.' };
@@ -610,29 +809,40 @@ export function useStoreData() {
       prev.map((c) => (c.id === id ? { ...c, name: trimmed, unitType } : c))
     );
 
+    // Update in Supabase
+    if (isSupabaseConfigured && supabase) {
+      await ensureStoreInSupabase(effectiveStoreId);
+      await supabase
+        .from('products')
+        .update({ name: trimmed, category: unitType })
+        .eq('id', id)
+        .eq('store_id', effectiveStoreId);
+    }
+
     // If category name changed, update all products that used old category name
     if (oldName !== trimmed) {
       setProducts((prev) =>
         prev.map((p) =>
-          p.storeId === activeStoreId && p.category === oldName
+          p.storeId === effectiveStoreId && p.category === oldName
             ? { ...p, category: trimmed }
             : p
         )
       );
 
       if (isSupabaseConfigured && supabase) {
-        supabase
+        await supabase
           .from('products')
           .update({ category: trimmed })
-          .eq('store_id', activeStoreId)
+          .eq('store_id', effectiveStoreId)
           .eq('category', oldName);
       }
     }
 
+    setTimeout(() => syncFromSupabase(), 400);
     return { success: true as const };
   };
 
-  const deleteCategory = (id: string) => {
+  const deleteCategory = async (id: string) => {
     const existing = categories.find((c) => c.id === id);
     if (!existing) return;
     const catName = existing.name;
@@ -640,26 +850,33 @@ export function useStoreData() {
     // 1. Remove from categories
     setCategories((prev) => prev.filter((c) => c.id !== id));
 
+    // Delete category record from Supabase
+    if (isSupabaseConfigured && supabase) {
+      await supabase.from('products').delete().eq('id', id).eq('store_id', effectiveStoreId);
+    }
+
     // 2. Re-assign products in this category to 'General'
     setProducts((prev) =>
       prev.map((p) =>
-        p.storeId === activeStoreId && p.category === catName
+        p.storeId === effectiveStoreId && p.category === catName
           ? { ...p, category: 'General' }
           : p
       )
     );
 
     if (isSupabaseConfigured && supabase) {
-      supabase
+      await supabase
         .from('products')
         .update({ category: 'General' })
-        .eq('store_id', activeStoreId)
+        .eq('store_id', effectiveStoreId)
         .eq('category', catName);
     }
+
+    setTimeout(() => syncFromSupabase(), 400);
   };
 
   // ── PRODUCT CRUD ──────────────────────────────────────────────
-  const saveProduct = (
+  const saveProduct = async (
     productData: Omit<Product, 'id' | 'storeId' | 'createdAt'>,
     productId?: string
   ) => {
@@ -668,65 +885,71 @@ export function useStoreData() {
         prev.map((p) => (p.id === productId ? { ...p, ...productData } : p))
       );
       if (isSupabaseConfigured && supabase) {
-        supabase.from('products').update({
+        await ensureStoreInSupabase(effectiveStoreId);
+        const res = await supabase.from('products').update({
           name: productData.name,
           category: productData.category,
-          barcode: productData.barcode,
+          barcode: productData.barcode || '',
           base_unit: productData.baseUnit,
           cost_price: productData.costPrice,
           retail_price: productData.retailPrice,
           stock_in_base_units: productData.stockInBaseUnits,
           min_stock_alert: productData.minStockAlert,
           has_variants: productData.hasVariants,
-          image_url: productData.imageUrl,
-        }).eq('id', productId).eq('store_id', activeStoreId);
+        }).eq('id', productId).eq('store_id', effectiveStoreId);
+        if (res.error) console.warn('Supabase update product error:', res.error);
       }
     } else {
       const newProduct: Product = {
         ...productData,
         id: `prod-${Date.now().toString(36)}`,
-        storeId: activeStoreId,
+        storeId: effectiveStoreId,
         createdAt: new Date().toISOString(),
       };
       setProducts((prev) => [newProduct, ...prev]);
       if (isSupabaseConfigured && supabase) {
-        supabase.from('products').insert({
+        await ensureStoreInSupabase(newProduct.storeId);
+        const res = await supabase.from('products').insert({
           id: newProduct.id,
           store_id: newProduct.storeId,
           name: newProduct.name,
           category: newProduct.category,
-          barcode: newProduct.barcode,
+          barcode: newProduct.barcode || '',
           base_unit: newProduct.baseUnit,
           cost_price: newProduct.costPrice,
           retail_price: newProduct.retailPrice,
           stock_in_base_units: newProduct.stockInBaseUnits,
           min_stock_alert: newProduct.minStockAlert,
           has_variants: newProduct.hasVariants,
-          image_url: newProduct.imageUrl || null,
           created_at: newProduct.createdAt,
         });
+        if (res.error) console.warn('Supabase insert product error:', res.error);
       }
     }
+
+    setTimeout(() => syncFromSupabase(), 400);
   };
 
-  const deleteProduct = (productId: string) => {
+  const deleteProduct = async (productId: string) => {
     setProducts((prev) => prev.filter((p) => p.id !== productId));
     if (isSupabaseConfigured && supabase) {
-      supabase.from('products').delete().eq('id', productId).eq('store_id', activeStoreId);
+      await supabase.from('products').delete().eq('id', productId).eq('store_id', effectiveStoreId);
+      setTimeout(() => syncFromSupabase(), 400);
     }
   };
 
-  const adjustStock = (productId: string, newStockInBaseUnits: number) => {
+  const adjustStock = async (productId: string, newStockInBaseUnits: number) => {
     setProducts((prev) =>
       prev.map((p) => (p.id === productId ? { ...p, stockInBaseUnits: newStockInBaseUnits } : p))
     );
     if (isSupabaseConfigured && supabase) {
-      supabase.from('products').update({ stock_in_base_units: newStockInBaseUnits }).eq('id', productId).eq('store_id', activeStoreId);
+      await supabase.from('products').update({ stock_in_base_units: newStockInBaseUnits }).eq('id', productId).eq('store_id', effectiveStoreId);
+      setTimeout(() => syncFromSupabase(), 400);
     }
   };
 
   // ── CUSTOMER CRUD ─────────────────────────────────────────────
-  const saveCustomer = (
+  const saveCustomer = async (
     customerData: Omit<Customer, 'id' | 'storeId' | 'currentBalance' | 'createdAt'>,
     customerId?: string
   ) => {
@@ -735,24 +958,26 @@ export function useStoreData() {
         prev.map((c) => (c.id === customerId ? { ...c, ...customerData } : c))
       );
       if (isSupabaseConfigured && supabase) {
-        supabase.from('customers').update({
+        await ensureStoreInSupabase(effectiveStoreId);
+        await supabase.from('customers').update({
           name: customerData.name,
           phone: customerData.phone,
           address: customerData.address || null,
           credit_limit: customerData.creditLimit,
-        }).eq('id', customerId).eq('store_id', activeStoreId);
+        }).eq('id', customerId).eq('store_id', effectiveStoreId);
       }
     } else {
       const newCustomer: Customer = {
         ...customerData,
         id: `cust-${Date.now().toString(36)}`,
-        storeId: activeStoreId,
+        storeId: effectiveStoreId,
         currentBalance: 0,
         createdAt: new Date().toISOString(),
       };
       setCustomers((prev) => [newCustomer, ...prev]);
       if (isSupabaseConfigured && supabase) {
-        supabase.from('customers').insert({
+        await ensureStoreInSupabase(newCustomer.storeId);
+        await supabase.from('customers').insert({
           id: newCustomer.id,
           store_id: newCustomer.storeId,
           name: newCustomer.name,
@@ -763,59 +988,66 @@ export function useStoreData() {
           created_at: newCustomer.createdAt,
         });
       }
+      setTimeout(() => syncFromSupabase(), 400);
       return newCustomer;
     }
   };
 
-  const deleteCustomer = (customerId: string) => {
+  const deleteCustomer = async (customerId: string) => {
     setCustomers((prev) => prev.filter((c) => c.id !== customerId));
     if (isSupabaseConfigured && supabase) {
-      supabase.from('customers').delete().eq('id', customerId).eq('store_id', activeStoreId);
+      await supabase.from('customers').delete().eq('id', customerId).eq('store_id', effectiveStoreId);
+      setTimeout(() => syncFromSupabase(), 400);
     }
   };
 
-  // ── KHATA TRANSACTION ─────────────────────────────────────────
-  const recordKhataTransaction = (params: {
+  // ── KHATA (UDHAAR) TRANSACTIONS ───────────────────────────────
+  const recordKhataTransaction = async (params: {
     customerId: string;
     type: 'debit' | 'credit';
     amount: number;
     description: string;
-    paymentMode?: 'cash' | 'online' | 'bank_transfer';
     orderId?: string;
+    paymentMode?: 'cash' | 'online' | 'bank_transfer' | 'cheque';
   }) => {
     const customer = customers.find((c) => c.id === params.customerId);
     if (!customer) return;
 
-    const balanceDiff = params.type === 'debit' ? params.amount : -params.amount;
-    const newBalance = customer.currentBalance + balanceDiff;
+    // Debit increases debt (+), Credit reduces debt (-)
+    const balanceChange = params.type === 'debit' ? params.amount : -params.amount;
+    const newBalance = customer.currentBalance + balanceChange;
 
     const newTx: KhataTransaction = {
-      id: `ktx-${Date.now().toString(36)}`,
-      storeId: activeStoreId,
+      id: `tx-${Date.now().toString(36)}`,
+      storeId: effectiveStoreId,
       customerId: params.customerId,
       orderId: params.orderId,
       type: params.type,
       amount: params.amount,
       balanceAfter: newBalance,
       description: params.description,
-      paymentMode: params.paymentMode || 'cash',
-      createdBy: currentUser ? currentUser.fullName : 'Owner',
+      paymentMode: params.paymentMode,
       createdAt: new Date().toISOString(),
+      createdBy: currentUser ? currentUser.fullName : 'Admin',
     };
 
     setKhataTransactions((prev) => [newTx, ...prev]);
-
     setCustomers((prev) =>
       prev.map((c) =>
         c.id === params.customerId
-          ? { ...c, currentBalance: newBalance, lastTransactionAt: new Date().toISOString() }
+          ? {
+              ...c,
+              currentBalance: newBalance,
+              lastTransactionAt: newTx.createdAt,
+            }
           : c
       )
     );
 
-    // Save to Supabase
+    // Save transaction to Supabase
     if (isSupabaseConfigured && supabase) {
-      supabase.from('khata_transactions').insert({
+      await ensureStoreInSupabase(effectiveStoreId);
+      await supabase.from('khata_transactions').insert({
         id: newTx.id,
         store_id: newTx.storeId,
         customer_id: newTx.customerId,
@@ -824,51 +1056,66 @@ export function useStoreData() {
         amount: newTx.amount,
         balance_after: newTx.balanceAfter,
         description: newTx.description,
-        payment_mode: newTx.paymentMode || null,
-        created_by: newTx.createdBy,
+        payment_mode: newTx.paymentMode || 'cash',
         created_at: newTx.createdAt,
+        created_by: newTx.createdBy,
       });
-      supabase.from('customers').update({
+
+      // Update customer balance in Supabase
+      await supabase.from('customers').update({
         current_balance: newBalance,
-        last_transaction_at: new Date().toISOString(),
-      }).eq('id', params.customerId).eq('store_id', activeStoreId);
+        last_transaction_at: newTx.createdAt,
+      }).eq('id', params.customerId).eq('store_id', effectiveStoreId);
+
+      setTimeout(() => syncFromSupabase(), 400);
     }
   };
 
-  // ── POS PROCESS ORDER ─────────────────────────────────────────
-  const processOrder = (orderData: Omit<Order, 'id' | 'orderNumber' | 'storeId' | 'createdAt'>) => {
-    const orderNumber = `INV-${new Date().getFullYear()}-${String(storeOrders.length + 1).padStart(4, '0')}`;
+  // ── POS CHECKOUT PROCESSOR ────────────────────────────────────
+  const processOrder = (orderData: Omit<Order, 'id' | 'orderNumber' | 'storeId' | 'createdAt'>): Order => {
+    const orderNum = `ORD-${Date.now().toString(36).toUpperCase()}`;
     const newOrder: Order = {
       ...orderData,
       id: `ord-${Date.now().toString(36)}`,
-      orderNumber,
-      storeId: activeStoreId,
+      orderNumber: orderNum,
+      storeId: effectiveStoreId,
       createdAt: new Date().toISOString(),
     };
 
-    // Decrement stock in base units
+    // Deduct stock for each line item sold
     setProducts((prev) => {
       const updated = [...prev];
-      for (const item of orderData.items) {
+      for (const item of newOrder.items) {
         const prodIndex = updated.findIndex((p) => p.id === item.productId);
         if (prodIndex >= 0) {
           const deduction = calculateStockDeductionInBaseUnits(item.quantity, item.conversionFactor);
           const currentStock = updated[prodIndex].stockInBaseUnits;
+          const newStock = Math.max(0, currentStock - deduction);
           updated[prodIndex] = {
             ...updated[prodIndex],
-            stockInBaseUnits: Math.max(0, currentStock - deduction),
+            stockInBaseUnits: newStock,
           };
+
+          // Update stock in Supabase
+          if (isSupabaseConfigured && supabase) {
+            supabase
+              .from('products')
+              .update({ stock_in_base_units: newStock })
+              .eq('id', item.productId)
+              .eq('store_id', effectiveStoreId);
+          }
         }
       }
       return updated;
     });
 
-    if (orderData.paymentMethod === 'khata' && orderData.customerId) {
+    // If payment method is Khata (Udhaar), record transaction automatically
+    if (newOrder.paymentMethod === 'khata' && newOrder.customerId) {
       recordKhataTransaction({
-        customerId: orderData.customerId,
+        customerId: newOrder.customerId,
         type: 'debit',
-        amount: orderData.grandTotal,
-        description: `POS Bill #${orderNumber} (${orderData.items.length} items)`,
+        amount: newOrder.grandTotal,
+        description: `POS Bill #${newOrder.orderNumber} (Store Purchase)`,
         orderId: newOrder.id,
       });
     }
@@ -877,27 +1124,30 @@ export function useStoreData() {
 
     // Save order to Supabase for cross-device sync
     if (isSupabaseConfigured && supabase) {
-      supabase.from('orders').insert({
-        id: newOrder.id,
-        order_number: newOrder.orderNumber,
-        store_id: newOrder.storeId,
-        cashier_id: newOrder.cashierId,
-        cashier_name: newOrder.cashierName,
-        customer_id: newOrder.customerId || null,
-        customer_name: newOrder.customerName || null,
-        items: JSON.stringify(newOrder.items),
-        subtotal: newOrder.subtotal,
-        discount_total: newOrder.discountTotal,
-        tax_total: newOrder.taxTotal,
-        grand_total: newOrder.grandTotal,
-        payment_method: newOrder.paymentMethod,
-        cash_paid: newOrder.cashPaid ?? null,
-        change_due: newOrder.changeDue ?? null,
-        khata_amount: newOrder.khataAmount ?? null,
-        notes: newOrder.notes || null,
-        status: newOrder.status,
-        created_at: newOrder.createdAt,
+      ensureStoreInSupabase(effectiveStoreId).then(() => {
+        supabase.from('orders').insert({
+          id: newOrder.id,
+          order_number: newOrder.orderNumber,
+          store_id: newOrder.storeId,
+          cashier_id: newOrder.cashierId,
+          cashier_name: newOrder.cashierName,
+          customer_id: newOrder.customerId || null,
+          customer_name: newOrder.customerName || null,
+          items: newOrder.items,
+          subtotal: newOrder.subtotal,
+          discount_total: newOrder.discountTotal,
+          tax_total: newOrder.taxTotal,
+          grand_total: newOrder.grandTotal,
+          payment_method: newOrder.paymentMethod,
+          cash_paid: newOrder.cashPaid ?? null,
+          change_due: newOrder.changeDue ?? null,
+          khata_amount: newOrder.khataAmount ?? null,
+          notes: newOrder.notes || null,
+          status: newOrder.status,
+          created_at: newOrder.createdAt,
+        });
       });
+      setTimeout(() => syncFromSupabase(), 400);
     }
 
     return newOrder;
@@ -923,7 +1173,7 @@ export function useStoreData() {
     loginWithCnic,
     logoutUser,
     stores,
-    activeStoreId,
+    activeStoreId: effectiveStoreId,
     setActiveStoreId,
     currentStore,
     currentRole,
@@ -949,5 +1199,7 @@ export function useStoreData() {
     processOrder,
     resetDemoData,
     syncFromSupabase,
+    isSyncing,
+    lastSyncedAt,
   };
 }
