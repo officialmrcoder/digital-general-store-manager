@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   TrendingUp,
   DollarSign,
@@ -6,6 +6,10 @@ import {
   BookOpen,
   AlertTriangle,
   Printer,
+  Calendar as CalendarIcon,
+  ChevronLeft,
+  ChevronRight,
+  RotateCcw,
 } from 'lucide-react';
 import { Store, Order, Product, Customer } from '../../types';
 
@@ -26,22 +30,81 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
   onSelectOrderForPrint,
   onNavigateToPOS,
 }) => {
-  const totalSales = orders.reduce((sum, o) => sum + o.grandTotal, 0);
+  // Helper to get today's date in YYYY-MM-DD
+  const getTodayString = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // State: 'today' | 'all' | 'custom'
+  const [dateFilterMode, setDateFilterMode] = useState<'today' | 'all' | 'custom'>('today');
+  const [selectedDate, setSelectedDate] = useState<string>(getTodayString);
+
+  // Quick day navigation
+  const shiftSelectedDate = (days: number) => {
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const curr = new Date(y, m - 1, d);
+    curr.setDate(curr.getDate() + days);
+    const year = curr.getFullYear();
+    const month = String(curr.getMonth() + 1).padStart(2, '0');
+    const day = String(curr.getDate()).padStart(2, '0');
+    const newDateStr = `${year}-${month}-${day}`;
+    setSelectedDate(newDateStr);
+    setDateFilterMode(newDateStr === getTodayString() ? 'today' : 'custom');
+  };
+
+  // Filter orders according to date filter
+  const filteredOrders = useMemo(() => {
+    if (dateFilterMode === 'all') {
+      return orders;
+    }
+    const targetDate = dateFilterMode === 'today' ? getTodayString() : selectedDate;
+    return orders.filter((o) => {
+      const ordDate = new Date(o.createdAt);
+      const y = ordDate.getFullYear();
+      const m = String(ordDate.getMonth() + 1).padStart(2, '0');
+      const d = String(ordDate.getDate()).padStart(2, '0');
+      const ordDateStr = `${y}-${m}-${d}`;
+      return ordDateStr === targetDate;
+    });
+  }, [orders, dateFilterMode, selectedDate]);
+
+  // Calculations based on filteredOrders
+  const totalSales = filteredOrders.reduce((sum, o) => sum + o.grandTotal, 0);
   const totalKhataReceivables = customers.reduce((sum, c) => sum + Math.max(0, c.currentBalance), 0);
   const lowStockItems = products.filter((p) => p.stockInBaseUnits <= p.minStockAlert);
 
-  const cashSales = orders.filter((o) => o.paymentMethod === 'cash').reduce((sum, o) => sum + o.grandTotal, 0);
-  const onlineSales = orders.filter((o) => o.paymentMethod === 'online').reduce((sum, o) => sum + o.grandTotal, 0);
-  const khataSales = orders.filter((o) => o.paymentMethod === 'khata').reduce((sum, o) => sum + o.grandTotal, 0);
+  const cashSales = filteredOrders.filter((o) => o.paymentMethod === 'cash').reduce((sum, o) => sum + o.grandTotal, 0);
+  const onlineSales = filteredOrders.filter((o) => o.paymentMethod === 'online').reduce((sum, o) => sum + o.grandTotal, 0);
+  const khataSales = filteredOrders.filter((o) => o.paymentMethod === 'khata').reduce((sum, o) => sum + o.grandTotal, 0);
 
   let totalCost = 0;
-  orders.forEach((o) => {
+  filteredOrders.forEach((o) => {
     o.items.forEach((item) => {
       totalCost += (item.baseCostPrice || 0) * (item.quantity * item.conversionFactor);
     });
   });
   const grossProfit = Math.max(0, totalSales - totalCost);
   const profitMargin = totalSales > 0 ? ((grossProfit / totalSales) * 100).toFixed(1) : 0;
+
+  // Pretty display for current filter
+  const formattedFilterDate = useMemo(() => {
+    if (dateFilterMode === 'all') return 'All Time (Total)';
+    const target = dateFilterMode === 'today' ? getTodayString() : selectedDate;
+    const isToday = target === getTodayString();
+    const [y, m, d] = target.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    const dateText = dateObj.toLocaleDateString('en-PK', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+    return isToday ? `Today (${dateText})` : dateText;
+  }, [dateFilterMode, selectedDate]);
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 text-slate-900 p-3 sm:p-6 pb-28 sm:pb-6 space-y-4 sm:space-y-6 antialiased select-none">
@@ -61,11 +124,94 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
 
         <button
           onClick={onNavigateToPOS}
-          className="px-5 py-2.5 rounded-xl bg-black hover:bg-slate-800 text-white font-bold text-xs shadow-md transition flex items-center gap-2 cursor-pointer"
+          className="px-5 py-2.5 rounded-xl bg-black hover:bg-slate-800 text-white font-bold text-xs shadow-md transition flex items-center gap-2 cursor-pointer w-full sm:w-auto justify-center"
         >
           <ShoppingBag className="w-4 h-4" />
           <span>Launch POS Register</span>
         </button>
+      </div>
+
+      {/* Date Filter & Calendar Controls */}
+      <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200">
+            <button
+              onClick={() => {
+                setDateFilterMode('today');
+                setSelectedDate(getTodayString());
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                dateFilterMode === 'today'
+                  ? 'bg-black text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Today
+            </button>
+            <button
+              onClick={() => setDateFilterMode('all')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                dateFilterMode === 'all'
+                  ? 'bg-black text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              All Time
+            </button>
+          </div>
+
+          {/* Previous / Next Day Arrows */}
+          <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200">
+            <button
+              onClick={() => shiftSelectedDate(-1)}
+              title="Previous Day"
+              className="p-1.5 hover:bg-white rounded-lg text-slate-700 hover:text-black transition cursor-pointer"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-xs font-bold text-slate-800 px-2 min-w-[140px] text-center font-mono">
+              {formattedFilterDate}
+            </span>
+            <button
+              onClick={() => shiftSelectedDate(1)}
+              title="Next Day"
+              className="p-1.5 hover:bg-white rounded-lg text-slate-700 hover:text-black transition cursor-pointer"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Date Picker Input */}
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="relative flex-1 sm:flex-initial">
+            <input
+              type="date"
+              value={dateFilterMode === 'all' ? '' : (dateFilterMode === 'today' ? getTodayString() : selectedDate)}
+              onChange={(e) => {
+                if (e.target.value) {
+                  setSelectedDate(e.target.value);
+                  setDateFilterMode(e.target.value === getTodayString() ? 'today' : 'custom');
+                }
+              }}
+              className="w-full sm:w-auto px-3 py-1.5 pl-8 text-xs font-bold font-mono border border-slate-300 rounded-xl bg-white text-slate-800 hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-black cursor-pointer"
+            />
+            <CalendarIcon className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          </div>
+
+          {dateFilterMode !== 'today' && (
+            <button
+              onClick={() => {
+                setDateFilterMode('today');
+                setSelectedDate(getTodayString());
+              }}
+              title="Reset to Today"
+              className="p-2 border border-slate-200 rounded-xl hover:bg-slate-100 text-slate-600 transition cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* KPI Cards Grid */}
@@ -73,7 +219,9 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
         {/* Total Sales */}
         <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 text-xs mb-2">
-            <span className="font-bold uppercase tracking-wider text-[10px]">Total Gross Sales</span>
+            <span className="font-bold uppercase tracking-wider text-[10px]">
+              {dateFilterMode === 'all' ? 'Total Sales' : 'Sales (' + formattedFilterDate + ')'}
+            </span>
             <div className="p-1.5 rounded-lg bg-slate-100 text-slate-900">
               <DollarSign className="w-4 h-4" />
             </div>
@@ -82,7 +230,7 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
             {store.currency} {totalSales.toLocaleString()}
           </p>
           <span className="text-[11px] text-slate-500 font-medium">
-            Across {orders.length} completed transactions
+            Across {filteredOrders.length} {dateFilterMode === 'all' ? 'total' : 'filtered'} completed bills
           </span>
         </div>
 
@@ -102,10 +250,10 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
           </span>
         </div>
 
-        {/* Khata Receivables */}
+        {/* Total Khata Outstanding */}
         <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 text-xs mb-2">
-            <span className="font-bold uppercase tracking-wider text-[10px]">Khata (Udhaar) Due</span>
+            <span className="font-bold uppercase tracking-wider text-[10px]">Khata Receivables</span>
             <div className="p-1.5 rounded-lg bg-slate-100 text-slate-900">
               <BookOpen className="w-4 h-4" />
             </div>
@@ -114,46 +262,44 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
             {store.currency} {totalKhataReceivables.toLocaleString()}
           </p>
           <span className="text-[11px] text-slate-500 font-medium">
-            Pending from {customers.filter((c) => c.currentBalance > 0).length} customers
+            Owed by customers (Store Ledger)
           </span>
         </div>
 
-        {/* Low Stock Warning */}
+        {/* Low Stock Alerts */}
         <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 text-xs mb-2">
-            <span className="font-bold uppercase tracking-wider text-[10px]">Low Stock Items</span>
+            <span className="font-bold uppercase tracking-wider text-[10px]">Low Stock Warnings</span>
             <div className="p-1.5 rounded-lg bg-slate-100 text-slate-900">
-              <AlertTriangle className="w-4 h-4 text-amber-600" />
+              <AlertTriangle className="w-4 h-4" />
             </div>
           </div>
-          <p className="text-2xl font-black text-amber-700 font-mono">
-            {lowStockItems.length} Items
+          <p className="text-2xl font-black text-amber-600 font-mono">
+            {lowStockItems.length}
           </p>
           <span className="text-[11px] text-slate-500 font-medium">
-            Need supplier reorder
+            Items need reordering
           </span>
         </div>
       </div>
 
-      {/* Two Column Layout: Payment Split & Low Stock Alert List */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Payment Methods Split */}
+      {/* Breakdowns Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Payment Methods */}
         <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-4">
           <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-            Revenue by Payment Method
+            Revenue by Payment Method ({formattedFilterDate})
           </h3>
 
           <div className="space-y-3">
             <div>
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-slate-700 font-bold">Cash Register Sales</span>
-                <span className="font-mono font-bold text-slate-900">
-                  {store.currency} {cashSales.toLocaleString()} ({totalSales > 0 ? ((cashSales / totalSales) * 100).toFixed(0) : 0}%)
-                </span>
+                <span className="font-medium text-slate-600">Cash Sales</span>
+                <span className="font-mono font-bold text-slate-900">{store.currency} {cashSales.toLocaleString()}</span>
               </div>
-              <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-black rounded-full transition-all duration-500"
+                  className="bg-black h-full rounded-full transition-all"
                   style={{ width: `${totalSales > 0 ? (cashSales / totalSales) * 100 : 0}%` }}
                 />
               </div>
@@ -161,14 +307,12 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
 
             <div>
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-slate-700 font-bold">Card / Online Payment</span>
-                <span className="font-mono font-bold text-slate-900">
-                  {store.currency} {onlineSales.toLocaleString()} ({totalSales > 0 ? ((onlineSales / totalSales) * 100).toFixed(0) : 0}%)
-                </span>
+                <span className="font-medium text-slate-600">Digital / Online</span>
+                <span className="font-mono font-bold text-slate-900">{store.currency} {onlineSales.toLocaleString()}</span>
               </div>
-              <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-slate-700 rounded-full transition-all duration-500"
+                  className="bg-slate-700 h-full rounded-full transition-all"
                   style={{ width: `${totalSales > 0 ? (onlineSales / totalSales) * 100 : 0}%` }}
                 />
               </div>
@@ -176,14 +320,12 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
 
             <div>
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-slate-700 font-bold">Khata Credit (Udhaar Billed)</span>
-                <span className="font-mono font-bold text-slate-900">
-                  {store.currency} {khataSales.toLocaleString()} ({totalSales > 0 ? ((khataSales / totalSales) * 100).toFixed(0) : 0}%)
-                </span>
+                <span className="font-medium text-slate-600">Khata (Udhaar) Sales</span>
+                <span className="font-mono font-bold text-slate-900">{store.currency} {khataSales.toLocaleString()}</span>
               </div>
-              <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-slate-400 rounded-full transition-all duration-500"
+                  className="bg-slate-400 h-full rounded-full transition-all"
                   style={{ width: `${totalSales > 0 ? (khataSales / totalSales) * 100 : 0}%` }}
                 />
               </div>
@@ -193,29 +335,28 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
 
         {/* Low Stock Items List */}
         <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-4">
-          <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
-            <AlertTriangle className="w-4 h-4 text-amber-600" />
-            Low Stock Warnings ({lowStockItems.length})
+          <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+            Critical Stock Reorder Alerts
           </h3>
 
-          <div className="space-y-2 max-h-60 overflow-y-auto">
+          <div className="space-y-2 max-h-48 overflow-y-auto">
             {lowStockItems.length === 0 ? (
-              <p className="text-xs text-slate-400 py-6 text-center">
-                All inventory items are currently well above reorder thresholds!
+              <p className="text-xs text-slate-400 py-4 text-center">
+                All inventory levels are optimal. No reorders needed!
               </p>
             ) : (
               lowStockItems.map((prod) => (
                 <div
                   key={prod.id}
-                  className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs"
+                  className="flex items-center justify-between p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs"
                 >
                   <div>
                     <p className="font-bold text-slate-900">{prod.name}</p>
-                    <span className="text-[10px] text-slate-400">
-                      Alert threshold: {prod.minStockAlert} {prod.baseUnit}
-                    </span>
+                    <p className="text-[10px] text-slate-500 font-mono">
+                      Category: {prod.category} • Base: {prod.baseUnit}
+                    </p>
                   </div>
-                  <span className="font-mono font-bold text-red-700 bg-red-50 px-2 py-0.5 rounded border border-red-200">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-amber-100 text-amber-900 border border-amber-300">
                     {prod.stockInBaseUnits} {prod.baseUnit} left
                   </span>
                 </div>
@@ -227,9 +368,14 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
 
       {/* Recent Orders Table */}
       <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-4">
-        <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-          Recent Invoices &amp; Receipts
-        </h3>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+          <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+            Invoices &amp; Receipts ({filteredOrders.length})
+          </h3>
+          <span className="text-[11px] text-slate-500 font-medium">
+            Showing records for: <span className="font-bold text-slate-900">{formattedFilterDate}</span>
+          </span>
+        </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs text-slate-800 border-collapse">
@@ -245,14 +391,14 @@ export const StoreDashboard: React.FC<StoreDashboardProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {orders.length === 0 ? (
+              {filteredOrders.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-8 text-center text-slate-400 text-xs">
-                    No sales recorded yet. Start billing from POS register.
+                    No sales recorded for {formattedFilterDate}. Start billing from POS register.
                   </td>
                 </tr>
               ) : (
-                orders.map((ord) => (
+                filteredOrders.map((ord) => (
                   <tr key={ord.id} className="hover:bg-slate-50">
                     <td className="py-2.5 px-3 font-mono font-bold text-slate-950">
                       {ord.orderNumber}

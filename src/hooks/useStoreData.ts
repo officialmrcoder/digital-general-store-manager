@@ -32,6 +32,7 @@ const STORAGE_KEYS = {
   KHATA_TXS: 'kiryanaflow_khata_txs_v2',
   ORDERS: 'kiryanaflow_orders_v2',
   CATEGORIES: 'kiryanaflow_categories_v2',
+  DELETED_STORE_IDS: 'kiryanaflow_deleted_store_ids_v1',
 };
 
 export function useStoreData() {
@@ -64,7 +65,10 @@ export function useStoreData() {
 
   const [stores, setStores] = useState<Store[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.STORES);
-    return saved ? JSON.parse(saved) : INITIAL_STORES;
+    const deletedRaw = localStorage.getItem(STORAGE_KEYS.DELETED_STORE_IDS);
+    const deletedSet = new Set<string>(deletedRaw ? JSON.parse(deletedRaw) : []);
+    const initialList = saved ? JSON.parse(saved) : INITIAL_STORES;
+    return initialList.filter((s: Store) => !deletedSet.has(s.id));
   });
 
   const [activeStoreId, setActiveStoreId] = useState<string>(() => {
@@ -248,27 +252,33 @@ export function useStoreData() {
         };
       });
 
-      // Merge Supabase stores with any locally known stores (like INITIAL_STORES)
-      const mergedStores = [...mappedStores];
-      for (const localStore of [...storesRef.current, ...INITIAL_STORES]) {
+      // Filter out deleted stores (both in-flight and persisted in deleted set)
+      let deletedIdsSet = new Set<string>();
+      try {
+        const rawDel = localStorage.getItem(STORAGE_KEYS.DELETED_STORE_IDS);
+        if (rawDel) {
+          deletedIdsSet = new Set(JSON.parse(rawDel));
+        }
+      } catch {}
+
+      // Supabase is authoritative for stores. Filter out any that were deleted.
+      const validDbStores = mappedStores.filter(
+        (s) => !pendingDeleteIds.current.has(s.id) && !deletedIdsSet.has(s.id)
+      );
+
+      // Only preserve local newly created stores that aren't yet in Supabase AND weren't deleted
+      const currentValidStores = storesRef.current.filter(
+        (s) => !pendingDeleteIds.current.has(s.id) && !deletedIdsSet.has(s.id)
+      );
+
+      const mergedStores = [...validDbStores];
+      for (const localStore of currentValidStores) {
         if (!mergedStores.some((s) => s.id === localStore.id)) {
           mergedStores.push(localStore);
-          // Upload local store to Supabase so foreign keys never fail
-          supabase.from('stores').insert({
-            id: localStore.id,
-            name: localStore.name,
-            slug: localStore.slug || localStore.name.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
-            phone: localStore.phone || '',
-            address: localStore.address || '',
-            currency: localStore.currency || 'PKR',
-            status: localStore.status || 'active',
-          });
         }
       }
 
-      if (mergedStores.length > 0) {
-        setStores(mergedStores);
-      }
+      setStores(mergedStores);
 
       // 3. Fetch Products and Categories from Supabase
       const { data: dbProducts } = await supabase.from('products').select('*');
@@ -379,7 +389,7 @@ export function useStoreData() {
 
       // 6. Fetch Orders from Supabase
       const { data: dbOrders } = await supabase.from('orders').select('*');
-      if (dbOrders && Array.isArray(dbOrders) && dbOrders.length > 0) {
+      if (dbOrders && Array.isArray(dbOrders)) {
         const mappedOrders: Order[] = dbOrders.map((o: any) => ({
           id: o.id,
           orderNumber: o.order_number || o.orderNumber || o.id,
@@ -401,7 +411,17 @@ export function useStoreData() {
           status: o.status || 'completed',
           createdAt: o.created_at || o.createdAt || new Date().toISOString(),
         }));
-        setOrders(mappedOrders);
+
+        // Merge with any freshly placed local orders that might not yet be fetched
+        setOrders((prevLocal) => {
+          const combined = [...mappedOrders];
+          for (const localOrd of prevLocal) {
+            if (!combined.some((o) => o.id === localOrd.id)) {
+              combined.unshift(localOrd);
+            }
+          }
+          return combined;
+        });
       }
 
       setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
@@ -666,6 +686,19 @@ export function useStoreData() {
 
   // ── SUPER ADMIN: DELETE STORE ──────────────────────────────────
   const deleteStore = async (storeId: string) => {
+    // 0. Mark as pending so sync doesn't re-add it
+    pendingDeleteIds.current.add(storeId);
+
+    // Persist to deleted store IDs permanently
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.DELETED_STORE_IDS);
+      const list: string[] = raw ? JSON.parse(raw) : [];
+      if (!list.includes(storeId)) {
+        list.push(storeId);
+        localStorage.setItem(STORAGE_KEYS.DELETED_STORE_IDS, JSON.stringify(list));
+      }
+    } catch {}
+
     // 1. Immediately update state
     setStores((prev) => prev.filter((s) => s.id !== storeId));
     setUsers((prev) => prev.filter((u) => u.storeId !== storeId));
@@ -674,6 +707,14 @@ export function useStoreData() {
     setOrders((prev) => prev.filter((o) => o.storeId !== storeId));
     setKhataTransactions((prev) => prev.filter((t) => t.storeId !== storeId));
     setCategories((prev) => prev.filter((c) => c.storeId !== storeId));
+
+    // If active store is deleted, switch to another store
+    if (activeStoreId === storeId) {
+      const remaining = stores.filter((s) => s.id !== storeId);
+      if (remaining.length > 0) {
+        setActiveStoreId(remaining[0].id);
+      }
+    }
 
     // 2. Persist immediately to localStorage
     try {
@@ -684,15 +725,25 @@ export function useStoreData() {
       }
     } catch {}
 
-    // 3. Delete in Supabase (cascades products, customers, transactions)
+    // 3. Delete in Supabase in correct order (orders, transactions, products & store_users first, then stores)
     if (isSupabaseConfigured && supabase) {
       try {
-        await supabase.from('stores').delete().eq('id', storeId);
+        await supabase.from('orders').delete().eq('store_id', storeId);
+        await supabase.from('khata_transactions').delete().eq('store_id', storeId);
+        await supabase.from('customers').delete().eq('store_id', storeId);
+        await supabase.from('products').delete().eq('store_id', storeId);
         await supabase.from('store_users').delete().eq('store_id', storeId);
+        await supabase.from('stores').delete().eq('id', storeId);
       } catch (err) {
         console.warn('Supabase delete store notice:', err);
       }
     }
+
+    // 4. Sync while guard is active to verify deletion
+    await syncFromSupabase();
+
+    // 5. Release the guard
+    pendingDeleteIds.current.delete(storeId);
   };
 
   // ── PRODUCT CATEGORIES ────────────────────────────────────────
@@ -1090,12 +1141,11 @@ export function useStoreData() {
 
     // Save order to Supabase for cross-device sync
     if (isSupabaseConfigured && supabase) {
-      ensureStoreInSupabase(effectiveStoreId).then(() => {
-        supabase.from('orders').insert({
+      ensureStoreInSupabase(effectiveStoreId).then(async () => {
+        const orderPayload: Record<string, any> = {
           id: newOrder.id,
           order_number: newOrder.orderNumber,
           store_id: newOrder.storeId,
-          cashier_id: newOrder.cashierId,
           cashier_name: newOrder.cashierName,
           customer_id: newOrder.customerId || null,
           customer_name: newOrder.customerName || null,
@@ -1108,10 +1158,13 @@ export function useStoreData() {
           cash_paid: newOrder.cashPaid ?? null,
           change_due: newOrder.changeDue ?? null,
           khata_amount: newOrder.khataAmount ?? null,
-          notes: newOrder.notes || null,
           status: newOrder.status,
           created_at: newOrder.createdAt,
-        });
+        };
+        const res = await supabase.from('orders').insert(orderPayload);
+        if (res.error) {
+          console.warn('Supabase order insert notice:', res.error);
+        }
       });
       setTimeout(() => syncFromSupabase(), 400);
     }
