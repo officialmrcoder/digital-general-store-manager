@@ -112,6 +112,9 @@ export function useStoreData() {
   const storesRef = useRef(stores);
   storesRef.current = stores;
 
+  // Track IDs currently being deleted so sync doesn't re-insert them
+  const pendingDeleteIds = useRef<Set<string>>(new Set());
+
   // LocalStorage persistence
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.STORES, JSON.stringify(stores));
@@ -298,67 +301,25 @@ export function useStoreData() {
           }
         }
 
-        // Bidirectional merge for Products:
-        // Supabase is authoritative, but if local has un-synced products, upload them to Supabase!
-        const currentLocalProducts = productsRef.current;
-        const unSyncedProducts = currentLocalProducts.filter(
-          (lp) => !realProducts.some((rp) => rp.id === lp.id)
+        // Supabase is authoritative — one-way pull only.
+        // Filter out any IDs currently being deleted (race condition guard).
+        const safeProducts = realProducts.filter(
+          (p) => !pendingDeleteIds.current.has(p.id)
         );
-
-        if (unSyncedProducts.length > 0) {
-          // Push unsynced products up to Supabase
-          for (const up of unSyncedProducts) {
-            await ensureStoreInSupabase(up.storeId);
-            await supabase.from('products').insert({
-              id: up.id,
-              store_id: up.storeId,
-              name: up.name,
-              category: up.category,
-              barcode: up.barcode || '',
-              base_unit: up.baseUnit,
-              cost_price: up.costPrice,
-              retail_price: up.retailPrice,
-              stock_in_base_units: up.stockInBaseUnits,
-              min_stock_alert: up.minStockAlert,
-              has_variants: up.hasVariants,
-              created_at: up.createdAt,
-            });
-          }
-          // Merge un-synced into product list
-          setProducts([...realProducts, ...unSyncedProducts]);
-        } else if (realProducts.length > 0) {
-          setProducts(realProducts);
-        }
-
-        // Bidirectional merge for Categories:
-        const currentLocalCategories = categoriesRef.current;
-        const unSyncedCats = currentLocalCategories.filter(
-          (lc) => !catRecords.some((rc) => rc.id === lc.id || (rc.storeId === lc.storeId && rc.name.toLowerCase() === lc.name.toLowerCase()))
-        );
-
-        if (unSyncedCats.length > 0) {
-          for (const uc of unSyncedCats) {
-            await ensureStoreInSupabase(uc.storeId);
-            await supabase.from('products').insert({
-              id: uc.id,
-              store_id: uc.storeId,
-              name: uc.name,
-              category: uc.unitType,
-              barcode: '__CATEGORY__',
-              base_unit: 'category',
-              cost_price: 0,
-              retail_price: 0,
-              stock_in_base_units: 0,
-              min_stock_alert: 0,
-              has_variants: false,
-              created_at: uc.createdAt,
-            });
-          }
+        if (safeProducts.length > 0 || realProducts.length === 0) {
+          setProducts(safeProducts);
         }
 
         // Combine DB categories + local categories + any category discovered in real products
+        // Filter out any IDs currently being deleted (race condition guard).
+        const currentLocalCategories = categoriesRef.current.filter(
+          (c) => !pendingDeleteIds.current.has(c.id)
+        );
+        const safeCatRecords = catRecords.filter(
+          (c) => !pendingDeleteIds.current.has(c.id)
+        );
         const catMap = new Map<string, ProductCategory>();
-        catRecords.forEach((c) => catMap.set(`${c.storeId}_${c.name.toLowerCase()}`, c));
+        safeCatRecords.forEach((c) => catMap.set(`${c.storeId}_${c.name.toLowerCase()}`, c));
         currentLocalCategories.forEach((c) => {
           const key = `${c.storeId}_${c.name.toLowerCase()}`;
           if (!catMap.has(key)) {
@@ -847,6 +808,9 @@ export function useStoreData() {
     if (!existing) return;
     const catName = existing.name;
 
+    // Mark as pending delete BEFORE any state or Supabase changes
+    pendingDeleteIds.current.add(id);
+
     // 1. Remove from categories
     setCategories((prev) => prev.filter((c) => c.id !== id));
 
@@ -872,6 +836,7 @@ export function useStoreData() {
         .eq('category', catName);
     }
 
+    pendingDeleteIds.current.delete(id);
     setTimeout(() => syncFromSupabase(), 400);
   };
 
@@ -931,10 +896,14 @@ export function useStoreData() {
   };
 
   const deleteProduct = async (productId: string) => {
+    pendingDeleteIds.current.add(productId);
     setProducts((prev) => prev.filter((p) => p.id !== productId));
     if (isSupabaseConfigured && supabase) {
       await supabase.from('products').delete().eq('id', productId).eq('store_id', effectiveStoreId);
+      pendingDeleteIds.current.delete(productId);
       setTimeout(() => syncFromSupabase(), 400);
+    } else {
+      pendingDeleteIds.current.delete(productId);
     }
   };
 
