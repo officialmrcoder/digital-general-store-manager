@@ -272,18 +272,24 @@ export function useStoreData() {
         }
       } catch {}
 
-      // Supabase is authoritative for stores. Filter out any that were deleted.
+      // Supabase is 100% authoritative for stores across all devices.
+      // If a store was deleted on another device (e.g. mobile), Supabase won't have it,
+      // so it will be immediately removed from this device as well!
       const validDbStores = mappedStores.filter(
         (s) => !pendingDeleteIds.current.has(s.id) && !deletedIdsSet.has(s.id)
       );
 
-      // Only preserve local newly created stores that aren't yet in Supabase AND weren't deleted
-      const currentValidStores = storesRef.current.filter(
-        (s) => !pendingDeleteIds.current.has(s.id) && !deletedIdsSet.has(s.id)
+      // Only preserve stores that were created locally in the last few seconds and are waiting to sync to Supabase
+      const pendingLocalStores = storesRef.current.filter(
+        (s) =>
+          !pendingDeleteIds.current.has(s.id) &&
+          !deletedIdsSet.has(s.id) &&
+          s.id.startsWith('store-') &&
+          Date.now() - new Date(s.createdAt).getTime() < 10000
       );
 
       const mergedStores = [...validDbStores];
-      for (const localStore of currentValidStores) {
+      for (const localStore of pendingLocalStores) {
         if (!mergedStores.some((s) => s.id === localStore.id)) {
           mergedStores.push(localStore);
         }
