@@ -171,8 +171,19 @@ export function useStoreData() {
   // Ensure a store exists in Supabase to prevent foreign key errors (409)
   const ensureStoreInSupabase = async (storeId: string) => {
     if (!isSupabaseConfigured || !supabase) return;
+    // Don't re-create a deleted store!
+    let deletedIdsSet = new Set<string>();
+    try {
+      const rawDel = localStorage.getItem(STORAGE_KEYS.DELETED_STORE_IDS);
+      if (rawDel) deletedIdsSet = new Set(JSON.parse(rawDel));
+    } catch {}
+
+    if (deletedIdsSet.has(storeId) || pendingDeleteIds.current.has(storeId)) {
+      return;
+    }
+
     const allKnown = [...storesRef.current, ...INITIAL_STORES];
-    const target = allKnown.find((s) => s.id === storeId);
+    const target = allKnown.find((s) => s.id === storeId && !deletedIdsSet.has(s.id));
     if (target) {
       try {
         await supabase.from('stores').insert({
@@ -542,7 +553,14 @@ export function useStoreData() {
     // 4. If Store Owner or Cashier, verify store status
     let targetStore = stores.find((s) => s.id === matchedUser.storeId);
 
-    // If target store not in memory yet, check Supabase stores
+    // If target store not in memory yet, check Supabase stores or INITIAL_STORES
+    if (!targetStore) {
+      const known = INITIAL_STORES.find((s) => s.id === matchedUser!.storeId);
+      if (known) {
+        targetStore = known;
+      }
+    }
+
     if (!targetStore && isSupabaseConfigured && supabase) {
       try {
         const { data: dbStores } = await supabase.from('stores').select('*');
@@ -560,11 +578,19 @@ export function useStoreData() {
             ownerCnic: s.owner_cnic || '',
             createdAt: s.created_at || new Date().toISOString(),
           }));
-          setStores(mappedStores);
           targetStore = mappedStores.find((s) => s.id === matchedUser!.storeId);
         }
       } catch (err) {
         console.warn('Store fetch error:', err);
+      }
+    }
+
+    if (!targetStore) {
+      // If store was deleted or not found, fall back to any available active store so user is never locked out
+      if (stores.length > 0) {
+        targetStore = stores[0];
+      } else if (INITIAL_STORES.length > 0) {
+        targetStore = INITIAL_STORES[0];
       }
     }
 
